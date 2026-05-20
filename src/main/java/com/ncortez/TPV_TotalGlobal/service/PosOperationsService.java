@@ -90,6 +90,9 @@ public class PosOperationsService {
         if (request == null || request.getTableNumber() == null) {
             throw new RuntimeException("El nÃƒÂºmero de mesa es obligatorio");
         }
+        if (request.getTableNumber() < 0) {
+            throw new RuntimeException("El nÃƒÂºmero de mesa no puede ser negativo");
+        }
 
         businessTableRepository.findByTableNumber(request.getTableNumber()).ifPresent(existing -> {
             throw new RuntimeException("Ya existe una mesa con ese nÃƒÂºmero");
@@ -129,6 +132,9 @@ public class PosOperationsService {
     public BusinessTable claimTable(Integer tableNumber, String username, String sessionToken, String role) {
         if (tableNumber == null) {
             throw new RuntimeException("El nÃƒÂºmero de mesa es obligatorio");
+        }
+        if (tableNumber < 0) {
+            throw new RuntimeException("El nÃƒÂºmero de mesa no puede ser negativo");
         }
 
         String safeUsername = normalizeUsername(username);
@@ -189,6 +195,9 @@ public class PosOperationsService {
         if (tableNumber == null) {
             throw new RuntimeException("El nÃƒÂºmero de mesa es obligatorio");
         }
+        if (tableNumber < 0) {
+            throw new RuntimeException("El nÃƒÂºmero de mesa no puede ser negativo");
+        }
 
         String safeUsername = normalizeUsername(username);
         if (safeUsername == null) {
@@ -243,7 +252,14 @@ public class PosOperationsService {
         }
 
         Integer tableNumberValue = request.getTableNumber();
-        final int tableNumber = tableNumberValue != null ? tableNumberValue : 0;
+        if (tableNumberValue == null) {
+            // Evita comportamiento silencioso (null -> 0/Barra) cuando falta mesa en el request.
+            throw new RuntimeException("El nÃƒÂºmero de mesa es obligatorio");
+        }
+        final int tableNumber = tableNumberValue;
+        if (tableNumber < 0) {
+            throw new RuntimeException("El nÃƒÂºmero de mesa no puede ser negativo");
+        }
         String operatorUsername = normalizeUsername(request.getOperatorUsername());
         String operatorSessionToken = normalizeToken(request.getOperatorSessionToken());
 
@@ -363,6 +379,9 @@ public class PosOperationsService {
     public void clearOpenOrder(Integer tableNumber, String username, String sessionToken, String role) {
         if (tableNumber == null) {
             throw new RuntimeException("El nÃƒÂºmero de mesa es obligatorio");
+        }
+        if (tableNumber < 0) {
+            throw new RuntimeException("El nÃƒÂºmero de mesa no puede ser negativo");
         }
 
         String safeUsername = normalizeUsername(username);

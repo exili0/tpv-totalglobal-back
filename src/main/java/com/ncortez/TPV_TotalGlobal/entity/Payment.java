@@ -28,8 +28,13 @@ public class Payment {
     @Column(nullable = false)
     private PaymentMethod paymentMethod;
 
+    /** Total del ticket cobrado; se usa para cierres de caja y para generar tickets. */
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal amount;
+
+    /** Importe realmente recibido, necesario para registrar cambio en cobros en efectivo. */
+    @Column(precision = 12, scale = 2)
+    private BigDecimal receivedAmount;
 
     @Column(nullable = false)
     private LocalDateTime paidAt = LocalDateTime.now();
@@ -45,6 +50,9 @@ public class Payment {
 
     public BigDecimal getAmount() { return amount; }
     public void setAmount(BigDecimal amount) { this.amount = amount; }
+
+    public BigDecimal getReceivedAmount() { return receivedAmount; }
+    public void setReceivedAmount(BigDecimal receivedAmount) { this.receivedAmount = receivedAmount; }
 
     public LocalDateTime getPaidAt() { return paidAt; }
     public void setPaidAt(LocalDateTime paidAt) { this.paidAt = paidAt; }

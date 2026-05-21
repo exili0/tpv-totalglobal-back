@@ -693,12 +693,23 @@ public class PosOperationsService {
         }
 
         PaymentMethod paymentMethod = request.getPaymentMethod() != null ? request.getPaymentMethod() : PaymentMethod.OTHER;
-        BigDecimal amount = request.getAmount() != null ? request.getAmount() : saleOrder.getTotal();
+        // amount conserva el valor real del ticket; receivedAmount solo diferencia el efectivo entregado.
+        BigDecimal amount = saleOrder.getTotal();
+        BigDecimal receivedAmount = request.getReceivedAmount() != null ? request.getReceivedAmount() : amount;
+
+        if (paymentMethod == PaymentMethod.CASH && receivedAmount.compareTo(amount) < 0) {
+            throw new RuntimeException("El importe entregado en efectivo no puede ser inferior al total del ticket");
+        }
+
+        if (paymentMethod != PaymentMethod.CASH) {
+            receivedAmount = amount;
+        }
 
         Payment payment = new Payment();
         payment.setSaleOrder(saleOrder);
         payment.setPaymentMethod(paymentMethod);
         payment.setAmount(amount);
+        payment.setReceivedAmount(receivedAmount);
         payment.setPaidAt(LocalDateTime.now());
         payment = paymentRepository.save(payment);
 

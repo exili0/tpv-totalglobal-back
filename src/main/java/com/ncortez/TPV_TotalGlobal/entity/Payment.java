@@ -36,6 +36,14 @@ public class Payment {
     @Column(precision = 12, scale = 2)
     private BigDecimal receivedAmount;
 
+    /** Usuario que registró el cobro en caja. */
+    @Column(length = 100)
+    private String collectedBy;
+
+    /** Propina asociada al cobro; no forma parte del total de productos del ticket. */
+    @Column(nullable = false, precision = 12, scale = 2)
+    private BigDecimal tipAmount = BigDecimal.ZERO;
+
     @Column(nullable = false)
     private LocalDateTime paidAt = LocalDateTime.now();
 
@@ -53,6 +61,12 @@ public class Payment {
 
     public BigDecimal getReceivedAmount() { return receivedAmount; }
     public void setReceivedAmount(BigDecimal receivedAmount) { this.receivedAmount = receivedAmount; }
+
+    public String getCollectedBy() { return collectedBy; }
+    public void setCollectedBy(String collectedBy) { this.collectedBy = collectedBy; }
+
+    public BigDecimal getTipAmount() { return tipAmount; }
+    public void setTipAmount(BigDecimal tipAmount) { this.tipAmount = tipAmount; }
 
     public LocalDateTime getPaidAt() { return paidAt; }
     public void setPaidAt(LocalDateTime paidAt) { this.paidAt = paidAt; }

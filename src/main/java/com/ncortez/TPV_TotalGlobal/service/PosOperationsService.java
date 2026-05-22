@@ -495,6 +495,8 @@ public class PosOperationsService {
         response.setTotalAmount(scale(payment.getAmount()));
         response.setTotalItems(saleOrder.getOrderLines().stream().mapToInt(SaleOrderLine::getQuantity).sum());
         response.setPaymentMethod(payment.getPaymentMethod());
+        response.setCollectedBy(payment.getCollectedBy());
+        response.setTipAmount(scale(payment.getTipAmount() != null ? payment.getTipAmount() : BigDecimal.ZERO));
 
         BigDecimal safeRefunded = refundedAmount != null ? refundedAmount : BigDecimal.ZERO;
         BigDecimal refundable = payment.getAmount().subtract(safeRefunded);
@@ -522,6 +524,8 @@ public class PosOperationsService {
         detail.setTotalAmount(summary.getTotalAmount());
         detail.setTotalItems(summary.getTotalItems());
         detail.setPaymentMethod(summary.getPaymentMethod());
+        detail.setCollectedBy(summary.getCollectedBy());
+        detail.setTipAmount(summary.getTipAmount());
         detail.setRefundedAmount(summary.getRefundedAmount());
         detail.setRefundableAmount(summary.getRefundableAmount());
         detail.setNotes(saleOrder.getNotes());
@@ -695,21 +699,34 @@ public class PosOperationsService {
         PaymentMethod paymentMethod = request.getPaymentMethod() != null ? request.getPaymentMethod() : PaymentMethod.OTHER;
         // amount conserva el valor real del ticket; receivedAmount solo diferencia el efectivo entregado.
         BigDecimal amount = saleOrder.getTotal();
-        BigDecimal receivedAmount = request.getReceivedAmount() != null ? request.getReceivedAmount() : amount;
+        BigDecimal tipAmount = request.getTipAmount() != null ? request.getTipAmount() : BigDecimal.ZERO;
+        if (tipAmount.compareTo(BigDecimal.ZERO) < 0) {
+            throw new RuntimeException("La propina no puede ser negativa");
+        }
 
-        if (paymentMethod == PaymentMethod.CASH && receivedAmount.compareTo(amount) < 0) {
-            throw new RuntimeException("El importe entregado en efectivo no puede ser inferior al total del ticket");
+        BigDecimal totalToCollect = amount.add(tipAmount);
+        BigDecimal receivedAmount = request.getReceivedAmount() != null ? request.getReceivedAmount() : totalToCollect;
+
+        if (paymentMethod == PaymentMethod.CASH && receivedAmount.compareTo(totalToCollect) < 0) {
+            throw new RuntimeException("El importe entregado en efectivo no puede ser inferior al total del ticket más propina");
         }
 
         if (paymentMethod != PaymentMethod.CASH) {
-            receivedAmount = amount;
+            receivedAmount = totalToCollect;
+        }
+
+        String collectedBy = normalizeUsername(request.getCashierUsername());
+        if (collectedBy == null && saleOrder.getTable() != null) {
+            collectedBy = normalizeUsername(saleOrder.getTable().getAttendedBy());
         }
 
         Payment payment = new Payment();
         payment.setSaleOrder(saleOrder);
         payment.setPaymentMethod(paymentMethod);
         payment.setAmount(amount);
+        payment.setTipAmount(scale(tipAmount));
         payment.setReceivedAmount(receivedAmount);
+        payment.setCollectedBy(collectedBy);
         payment.setPaidAt(LocalDateTime.now());
         payment = paymentRepository.save(payment);
 

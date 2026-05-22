@@ -18,6 +18,8 @@ public class TicketSummaryResponse {
     private BigDecimal totalAmount;
     private Integer totalItems;
     private PaymentMethod paymentMethod;
+    private String collectedBy;
+    private BigDecimal tipAmount;
     private BigDecimal refundedAmount;
     private BigDecimal refundableAmount;
 
@@ -52,6 +54,14 @@ public class TicketSummaryResponse {
     public PaymentMethod getPaymentMethod() { return paymentMethod; }
 
     public void setPaymentMethod(PaymentMethod paymentMethod) { this.paymentMethod = paymentMethod; }
+
+    public String getCollectedBy() { return collectedBy; }
+
+    public void setCollectedBy(String collectedBy) { this.collectedBy = collectedBy; }
+
+    public BigDecimal getTipAmount() { return tipAmount; }
+
+    public void setTipAmount(BigDecimal tipAmount) { this.tipAmount = tipAmount; }
 
     public BigDecimal getRefundedAmount() { return refundedAmount; }
 

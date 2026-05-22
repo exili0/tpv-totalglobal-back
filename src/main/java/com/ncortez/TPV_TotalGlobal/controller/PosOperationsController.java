@@ -163,6 +163,16 @@ public class PosOperationsController {
     }
 
     /**
+     * Devuelve el turno de caja abierto actualmente.
+     *
+     * @return Turno abierto o null si no hay ninguno activo
+     */
+    @GetMapping("/shifts/current")
+    public ResponseEntity<CashRegisterShift> getCurrentShift() {
+        return ResponseEntity.ok(posOperationsService.getCurrentOpenShift().orElse(null));
+    }
+
+    /**
      * Cierra el turno de caja actualmente activo.
      *
      * @param request DTO con el usuario que cierra la caja (opcional)

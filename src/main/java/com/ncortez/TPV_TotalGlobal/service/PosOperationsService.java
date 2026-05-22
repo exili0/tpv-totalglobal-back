@@ -37,9 +37,12 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Servicio principal de negocio del TPV: mesas, ÃƒÂ³rdenes, cobros, turnos y reporte Z.
@@ -136,6 +139,8 @@ public class PosOperationsService {
         if (tableNumber < 0) {
             throw new RuntimeException("El nÃƒÂºmero de mesa no puede ser negativo");
         }
+
+        ensureOpenShiftForOperations(); // Se asegura de que haya un turno abierto antes de permitir operaciones en mesas
 
         String safeUsername = normalizeUsername(username);
         if (safeUsername == null) {
@@ -697,6 +702,7 @@ public class PosOperationsService {
         }
 
         PaymentMethod paymentMethod = request.getPaymentMethod() != null ? request.getPaymentMethod() : PaymentMethod.OTHER;
+        CashRegisterShift openShift = ensureOpenShiftForOperations();
         // amount conserva el valor real del ticket; receivedAmount solo diferencia el efectivo entregado.
         BigDecimal amount = saleOrder.getTotal();
         BigDecimal tipAmount = request.getTipAmount() != null ? request.getTipAmount() : BigDecimal.ZERO;
@@ -743,12 +749,9 @@ public class PosOperationsService {
             businessTableRepository.save(table);
         }
 
-        cashRegisterShiftRepository.findFirstByStatusOrderByOpenedAtDesc(CashShiftStatus.OPEN)
-                .ifPresent(shift -> {
-                    normalizeShiftTotals(shift);
-                    addPaymentToShift(shift, amount, paymentMethod, saleOrder.getTotalProfit());
-                    cashRegisterShiftRepository.save(shift);
-                });
+        normalizeShiftTotals(openShift);
+        addPaymentToShift(openShift, amount, paymentMethod, saleOrder.getTotalProfit());
+        cashRegisterShiftRepository.save(openShift);
 
         return payment;
     }
@@ -775,6 +778,11 @@ public class PosOperationsService {
         return cashRegisterShiftRepository.save(shift);
     }
 
+    /** Devuelve el turno de caja abierto actualmente, si existe. */
+    public Optional<CashRegisterShift> getCurrentOpenShift() {
+        return cashRegisterShiftRepository.findFirstByStatusOrderByOpenedAtDesc(CashShiftStatus.OPEN);
+    }
+
     /**
      * Cierra el turno de caja actualmente abierto.
      * Registra la fecha de cierre y el usuario que la realiza.
@@ -784,6 +792,19 @@ public class PosOperationsService {
      * @throws RuntimeException si no hay ningún turno abierto
      */
     public CashRegisterShift closeShift(CloseShiftRequest request) {
+        List<SaleOrder> pendingOrders = saleOrderRepository.findByStatus(OrderStatus.OPEN).stream()
+            .filter(order -> order.getOrderLines() != null && !order.getOrderLines().isEmpty())
+            .toList();
+
+        if (!pendingOrders.isEmpty()) {
+            String pendingTablesLabel = pendingOrders.stream()
+                .map(this::getServiceLabel)
+                .distinct()
+                .sorted(Comparator.naturalOrder())
+                .collect(Collectors.joining(", "));
+            throw new RuntimeException("No se puede cerrar la caja: hay servicios sin pagar (" + pendingTablesLabel + ")");
+        }
+
         CashRegisterShift shift = cashRegisterShiftRepository.findFirstByStatusOrderByOpenedAtDesc(CashShiftStatus.OPEN)
                 .orElseThrow(() -> new RuntimeException("No hay un turno de caja abierto"));
 
@@ -792,6 +813,11 @@ public class PosOperationsService {
         shift.setClosedBy(request != null ? request.getClosedBy() : null);
 
         return cashRegisterShiftRepository.save(shift);
+    }
+
+    private CashRegisterShift ensureOpenShiftForOperations() {
+        return cashRegisterShiftRepository.findFirstByStatusOrderByOpenedAtDesc(CashShiftStatus.OPEN)
+                .orElseThrow(() -> new RuntimeException("No hay un turno de caja abierto. Abre el turno para operar mesas y cobros"));
     }
 
     /**

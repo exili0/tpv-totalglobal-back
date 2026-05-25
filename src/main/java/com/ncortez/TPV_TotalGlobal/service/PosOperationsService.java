@@ -784,6 +784,44 @@ public class PosOperationsService {
     }
 
     /**
+     * Recupera el histórico de turnos de caja para la vista administrativa de ganancias.
+     *
+     * Reglas de filtrado:
+     * - Sin fechas: devuelve todo el histórico.
+     * - Solo 'startDate': devuelve desde las 00:00 de esa fecha en adelante.
+     * - Solo 'endDate': devuelve hasta las 23:59:59.999 de esa fecha.
+     * - Ambas fechas: devuelve aperturas dentro del rango completo (inclusive).
+     *
+     * @param startDate fecha inicial opcional
+     * @param endDate fecha final opcional
+     * @return lista de turnos ordenada por apertura descendente
+     * @throws RuntimeException si el rango es inválido (startDate mayor que endDate)
+     */
+    public List<CashRegisterShift> getShiftHistory(LocalDate startDate, LocalDate endDate) {
+        if (startDate != null && endDate != null && startDate.isAfter(endDate)) {
+            throw new RuntimeException("La fecha inicial no puede ser posterior a la fecha final");
+        }
+
+        if (startDate == null && endDate == null) {
+            return cashRegisterShiftRepository.findAllByOrderByOpenedAtDesc();
+        }
+
+        if (startDate != null && endDate != null) {
+            LocalDateTime start = startDate.atStartOfDay();
+            LocalDateTime end = endDate.plusDays(1).atStartOfDay().minusNanos(1);
+            return cashRegisterShiftRepository.findByOpenedAtBetweenOrderByOpenedAtDesc(start, end);
+        }
+
+        if (startDate != null) {
+            return cashRegisterShiftRepository
+                    .findByOpenedAtGreaterThanEqualOrderByOpenedAtDesc(startDate.atStartOfDay());
+        }
+
+        LocalDateTime end = endDate.plusDays(1).atStartOfDay().minusNanos(1);
+        return cashRegisterShiftRepository.findByOpenedAtLessThanEqualOrderByOpenedAtDesc(end);
+    }
+
+    /**
      * Cierra el turno de caja actualmente abierto.
      * Registra la fecha de cierre y el usuario que la realiza.
      *

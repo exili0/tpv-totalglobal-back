@@ -173,6 +173,33 @@ public class PosOperationsController {
     }
 
     /**
+     * Devuelve el histórico de turnos de caja, opcionalmente filtrado por fecha de apertura.
+     *
+     * Parámetros opcionales (formato yyyy-MM-dd):
+     * - 'startDate': incluye turnos abiertos desde esa fecha.
+     * - 'endDate': incluye turnos abiertos hasta esa fecha.
+     *
+     * Si se envían ambos, se aplica el rango completo; si no se envía ninguno,
+     * devuelve todo el histórico en orden descendente por apertura.
+     *
+     * @param startDate fecha inicial opcional
+     * @param endDate fecha final opcional
+     * @return lista de turnos de caja
+     */
+    @GetMapping("/shifts")
+    public ResponseEntity<?> getShiftHistory(
+            @RequestParam(value = "startDate", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam(value = "endDate", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate) {
+        try {
+            return ResponseEntity.ok(posOperationsService.getShiftHistory(startDate, endDate));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    /**
      * Cierra el turno de caja actualmente activo.
      *
      * @param request DTO con el usuario que cierra la caja (opcional)

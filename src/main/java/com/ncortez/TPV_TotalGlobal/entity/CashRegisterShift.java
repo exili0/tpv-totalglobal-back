@@ -50,6 +50,10 @@ public class CashRegisterShift {
 
     private String closedBy;
 
+    @Lob
+    @Column(columnDefinition = "LONGTEXT")
+    private String closingStockSnapshot;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
@@ -85,4 +89,7 @@ public class CashRegisterShift {
 
     public String getClosedBy() { return closedBy; }
     public void setClosedBy(String closedBy) { this.closedBy = closedBy; }
+
+    public String getClosingStockSnapshot() { return closingStockSnapshot; }
+    public void setClosingStockSnapshot(String closingStockSnapshot) { this.closingStockSnapshot = closingStockSnapshot; }
 }

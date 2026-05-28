@@ -1,5 +1,7 @@
 package com.ncortez.TPV_TotalGlobal.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ncortez.TPV_TotalGlobal.dto.CloseShiftRequest;
 import com.ncortez.TPV_TotalGlobal.dto.CreateOrderRequest;
 import com.ncortez.TPV_TotalGlobal.dto.DailyZReportResponse;
@@ -7,6 +9,8 @@ import com.ncortez.TPV_TotalGlobal.dto.OpenShiftRequest;
 import com.ncortez.TPV_TotalGlobal.dto.OrderItemRequest;
 import com.ncortez.TPV_TotalGlobal.dto.PaymentRequest;
 import com.ncortez.TPV_TotalGlobal.dto.RefundRequest;
+import com.ncortez.TPV_TotalGlobal.dto.ShiftDetailResponse;
+import com.ncortez.TPV_TotalGlobal.dto.ShiftProductSaleResponse;
 import com.ncortez.TPV_TotalGlobal.dto.TableRequest;
 import com.ncortez.TPV_TotalGlobal.dto.TicketDetailResponse;
 import com.ncortez.TPV_TotalGlobal.dto.TicketLineResponse;
@@ -32,6 +36,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
@@ -42,6 +47,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -70,6 +76,9 @@ public class PosOperationsService {
 
     @Autowired
     private StockService stockService;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     /**
      * Devuelve todas las mesas activas del negocio, ordenadas por número.
@@ -822,6 +831,77 @@ public class PosOperationsService {
     }
 
     /**
+     * Devuelve el detalle de un turno de caja con el acumulado de productos vendidos.
+     */
+    @Transactional(readOnly = true)
+    public ShiftDetailResponse getShiftDetail(Long shiftId) {
+        if (shiftId == null) {
+            throw new RuntimeException("El identificador del turno es obligatorio");
+        }
+
+        CashRegisterShift shift = cashRegisterShiftRepository.findById(shiftId)
+                .orElseThrow(() -> new RuntimeException("Turno de caja no encontrado"));
+
+        LocalDateTime start = shift.getOpenedAt();
+        LocalDateTime end = shift.getClosedAt() != null ? shift.getClosedAt() : LocalDateTime.now();
+        List<Payment> payments = paymentRepository.findByPaidAtBetweenWithOrderLinesAndProducts(start, end);
+
+        Map<Long, Integer> snapshotMap = parseClosingStockSnapshot(shift.getClosingStockSnapshot());
+        Map<Long, ProductAccumulator> productTotals = new HashMap<>();
+
+        for (Payment payment : payments) {
+            if (payment.getSaleOrder() == null || payment.getSaleOrder().getOrderLines() == null) {
+                continue;
+            }
+
+            for (SaleOrderLine line : payment.getSaleOrder().getOrderLines()) {
+                Long productId = line.getProduct() != null ? line.getProduct().getId() : null;
+                if (productId == null) {
+                    continue;
+                }
+
+                ProductAccumulator accumulator = productTotals.computeIfAbsent(productId, id -> {
+                    ProductAccumulator created = new ProductAccumulator();
+                    created.productId = id;
+                    created.productName = line.getProductName();
+                    created.quantitySold = 0;
+                    created.totalSales = BigDecimal.ZERO;
+                    created.totalProfit = BigDecimal.ZERO;
+                    return created;
+                });
+
+                Integer lineQuantity = line.getQuantity();
+                int quantity = lineQuantity != null ? lineQuantity.intValue() : 0;
+                accumulator.quantitySold += quantity;
+                accumulator.totalSales = accumulator.totalSales.add(line.getSubtotal() != null ? line.getSubtotal() : BigDecimal.ZERO);
+                accumulator.totalProfit = accumulator.totalProfit.add(line.getProfit() != null ? line.getProfit() : BigDecimal.ZERO);
+            }
+        }
+
+        List<ShiftProductSaleResponse> soldProducts = productTotals.values().stream()
+                .map(total -> {
+                    ShiftProductSaleResponse response = new ShiftProductSaleResponse();
+                    response.setProductId(total.productId);
+                    response.setProductName(total.productName);
+                    response.setQuantitySold(total.quantitySold);
+                    response.setTotalSales(scale(total.totalSales));
+                    response.setTotalProfit(scale(total.totalProfit));
+                    response.setStockAtClose(snapshotMap.get(total.productId));
+                    return response;
+                })
+                .sorted(Comparator.comparing(
+                        ShiftProductSaleResponse::getProductName,
+                        Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)
+                ))
+                .toList();
+
+        ShiftDetailResponse detail = new ShiftDetailResponse();
+        detail.setShift(shift);
+        detail.setSoldProducts(soldProducts);
+        return detail;
+    }
+
+    /**
      * Cierra el turno de caja actualmente abierto.
      * Registra la fecha de cierre y el usuario que la realiza.
      *
@@ -846,8 +926,10 @@ public class PosOperationsService {
         CashRegisterShift shift = cashRegisterShiftRepository.findFirstByStatusOrderByOpenedAtDesc(CashShiftStatus.OPEN)
                 .orElseThrow(() -> new RuntimeException("No hay un turno de caja abierto"));
 
+        LocalDateTime closedAt = LocalDateTime.now();
+        shift.setClosingStockSnapshot(buildClosingStockSnapshot(shift.getOpenedAt(), closedAt));
         shift.setStatus(CashShiftStatus.CLOSED);
-        shift.setClosedAt(LocalDateTime.now());
+        shift.setClosedAt(closedAt);
         shift.setClosedBy(request != null ? request.getClosedBy() : null);
 
         return cashRegisterShiftRepository.save(shift);
@@ -976,6 +1058,55 @@ public class PosOperationsService {
 
         shift.setTotalSales(scale(shift.getTotalSales().add(amount)));
         shift.setTotalProfit(scale(shift.getTotalProfit().add(orderProfit != null ? orderProfit : BigDecimal.ZERO)));
+    }
+
+    /**
+     * Construye un snapshot JSON {productId: stockAlCerrar} solo para productos vendidos en el turno.
+     */
+    private String buildClosingStockSnapshot(LocalDateTime start, LocalDateTime end) {
+        List<Payment> payments = paymentRepository.findByPaidAtBetweenWithOrderLinesAndProducts(start, end);
+        Set<Long> soldProductIds = payments.stream()
+                .filter(payment -> payment.getSaleOrder() != null)
+                .flatMap(payment -> {
+                    List<SaleOrderLine> lines = payment.getSaleOrder().getOrderLines();
+                    return lines != null ? lines.stream() : java.util.stream.Stream.empty();
+                })
+                .map(line -> line.getProduct() != null ? line.getProduct().getId() : null)
+                .filter(id -> id != null)
+                .collect(Collectors.toSet());
+
+        if (soldProductIds.isEmpty()) {
+            return "{}";
+        }
+
+        Map<Long, Integer> stockByProduct = productRepository.findAllById(soldProductIds).stream()
+                .collect(Collectors.toMap(Product::getId, Product::getStock));
+
+        try {
+            return objectMapper.writeValueAsString(stockByProduct);
+        } catch (IOException ex) {
+            throw new RuntimeException("No se pudo generar el snapshot de stock al cierre", ex);
+        }
+    }
+
+    private Map<Long, Integer> parseClosingStockSnapshot(String rawSnapshot) {
+        if (rawSnapshot == null || rawSnapshot.isBlank()) {
+            return Map.of();
+        }
+
+        try {
+            return objectMapper.readValue(rawSnapshot, new TypeReference<Map<Long, Integer>>() {});
+        } catch (IOException ex) {
+            return Map.of();
+        }
+    }
+
+    private static class ProductAccumulator {
+        private Long productId;
+        private String productName;
+        private Integer quantitySold;
+        private BigDecimal totalSales;
+        private BigDecimal totalProfit;
     }
 
     /** Suma los importes de los cobros de una lista filtrados por método de pago. */

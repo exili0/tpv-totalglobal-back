@@ -200,6 +200,21 @@ public class PosOperationsController {
     }
 
     /**
+     * Devuelve el detalle de un turno de caja con productos vendidos y stock al cierre.
+     *
+     * @param shiftId identificador del turno
+     * @return detalle del turno o error 400
+     */
+    @GetMapping("/shifts/{shiftId}/detail")
+    public ResponseEntity<?> getShiftDetail(@PathVariable Long shiftId) {
+        try {
+            return ResponseEntity.ok(posOperationsService.getShiftDetail(shiftId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    /**
      * Cierra el turno de caja actualmente activo.
      *
      * @param request DTO con el usuario que cierra la caja (opcional)

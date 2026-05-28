@@ -33,4 +33,17 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
             where p.id = :paymentId
             """)
     Optional<Payment> findByIdWithTicketDetail(@Param("paymentId") Long paymentId);
+
+    @Query("""
+            select distinct p
+            from Payment p
+            left join fetch p.saleOrder so
+            left join fetch so.orderLines lines
+            left join fetch lines.product
+            where p.paidAt between :start and :end
+            """)
+    List<Payment> findByPaidAtBetweenWithOrderLinesAndProducts(
+            @Param("start") LocalDateTime start,
+            @Param("end") LocalDateTime end
+    );
 }

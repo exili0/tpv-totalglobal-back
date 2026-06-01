@@ -1,6 +1,7 @@
 package com.ncortez.TPV_TotalGlobal.dto;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 /**
  * Petición para registrar una devolución sobre un cobro existente.
@@ -13,6 +14,8 @@ public class RefundRequest {
     private BigDecimal amount;
     private String reason;
     private String refundedBy;
+    private String idempotencyKey;
+    private LocalDateTime clientAttemptAt;
 
     /**
      * Indica si el producto devuelto regresa al stock (true) o es considerado desperdicio (false).
@@ -61,6 +64,20 @@ public class RefundRequest {
     public String getRefundedBy() { return refundedBy; }
 
     public void setRefundedBy(String refundedBy) { this.refundedBy = refundedBy; }
+
+    /**
+     * @return Clave de idempotencia enviada por cliente para evitar duplicados por reintento.
+     */
+    public String getIdempotencyKey() { return idempotencyKey; }
+
+    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
+
+    /**
+     * @return Marca temporal del intento de devolución en cliente.
+     */
+    public LocalDateTime getClientAttemptAt() { return clientAttemptAt; }
+
+    public void setClientAttemptAt(LocalDateTime clientAttemptAt) { this.clientAttemptAt = clientAttemptAt; }
 
     /**
      * @return Indica si el producto regresa al stock (true) o es considerado desperdicio (false).

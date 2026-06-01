@@ -5,13 +5,19 @@ import com.ncortez.TPV_TotalGlobal.entity.CashRegisterShift;
 import com.ncortez.TPV_TotalGlobal.entity.Payment;
 import com.ncortez.TPV_TotalGlobal.entity.Refund;
 import com.ncortez.TPV_TotalGlobal.entity.SaleOrder;
+import com.ncortez.TPV_TotalGlobal.exception.RefundConflictException;
 import com.ncortez.TPV_TotalGlobal.service.PosOperationsService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 
 /**
@@ -137,12 +143,36 @@ public class PosOperationsController {
      * @return Devolución registrada o error 400 con el motivo
      */
     @PostMapping("/refunds")
-    public ResponseEntity<?> registerRefund(@RequestBody RefundRequest request) {
+    public ResponseEntity<?> registerRefund(
+            @RequestBody RefundRequest request,
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(value = "X-Client-Attempt-At", required = false) String clientAttemptAt
+    ) {
         try {
+            request.setIdempotencyKey(idempotencyKey);
+            request.setClientAttemptAt(parseClientAttemptAt(clientAttemptAt));
             Refund refund = posOperationsService.registerRefund(request);
             return ResponseEntity.ok(refund);
+        } catch (RefundConflictException | ObjectOptimisticLockingFailureException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getMessage());
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    private LocalDateTime parseClientAttemptAt(String clientAttemptAt) {
+        if (clientAttemptAt == null || clientAttemptAt.isBlank()) {
+            return null;
+        }
+
+        try {
+            return LocalDateTime.parse(clientAttemptAt.trim());
+        } catch (DateTimeParseException ignored) {
+            try {
+                return OffsetDateTime.parse(clientAttemptAt.trim()).toLocalDateTime();
+            } catch (DateTimeParseException ignoredOffset) {
+                return null;
+            }
         }
     }
 

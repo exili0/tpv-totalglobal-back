@@ -15,6 +15,7 @@ import com.ncortez.TPV_TotalGlobal.dto.TableRequest;
 import com.ncortez.TPV_TotalGlobal.dto.TicketDetailResponse;
 import com.ncortez.TPV_TotalGlobal.dto.TicketLineResponse;
 import com.ncortez.TPV_TotalGlobal.dto.TicketSummaryResponse;
+import com.ncortez.TPV_TotalGlobal.exception.RefundConflictException;
 import com.ncortez.TPV_TotalGlobal.entity.BusinessTable;
 import com.ncortez.TPV_TotalGlobal.entity.CashRegisterShift;
 import com.ncortez.TPV_TotalGlobal.entity.Payment;
@@ -33,6 +34,7 @@ import com.ncortez.TPV_TotalGlobal.repository.ProductRepository;
 import com.ncortez.TPV_TotalGlobal.repository.RefundRepository;
 import com.ncortez.TPV_TotalGlobal.repository.SaleOrderRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -582,7 +584,25 @@ public class PosOperationsService {
             throw new RuntimeException("El usuario que realiza la devoluciÃƒÂ³n es obligatorio");
         }
 
-        Payment payment = paymentRepository.findById(request.getPaymentId())
+        String normalizedReason = request.getReason() != null ? request.getReason().trim() : null;
+        if (normalizedReason != null && normalizedReason.isBlank()) {
+            normalizedReason = null;
+        }
+
+        boolean shouldReturnToStock = !Boolean.FALSE.equals(request.getReturnToStock());
+        if (!shouldReturnToStock && (normalizedReason == null || normalizedReason.isBlank())) {
+            throw new RuntimeException("El motivo es obligatorio cuando la devolución no regresa al stock");
+        }
+
+        String idempotencyKey = normalizeIdempotencyKey(request.getIdempotencyKey());
+        if (idempotencyKey != null) {
+            Optional<Refund> existingRefund = refundRepository.findFirstByPaymentIdAndIdempotencyKey(request.getPaymentId(), idempotencyKey);
+            if (existingRefund.isPresent()) {
+                return existingRefund.get();
+            }
+        }
+
+        Payment payment = paymentRepository.findByIdForUpdate(request.getPaymentId())
                 .orElseThrow(() -> new RuntimeException("Cobro no encontrado: " + request.getPaymentId()));
 
         BigDecimal refundedAmount = refundRepository.sumAmountByPaymentId(payment.getId());
@@ -643,14 +663,27 @@ public class PosOperationsService {
         refund.setAmount(scale(amount));
         refund.setSaleOrderLine(refundedLine);
         refund.setRefundedQuantity(refundedQuantity);
-        refund.setReason(request.getReason() != null ? request.getReason().trim() : null);
+        refund.setReason(normalizedReason);
         refund.setRefundedBy(normalizeUsername(request.getRefundedBy()));
+        refund.setIdempotencyKey(idempotencyKey);
+        refund.setClientAttemptAt(request.getClientAttemptAt());
         
         // Establecer si el producto regresa al stock o es considerado desecho
-        boolean shouldReturnToStock = request.getReturnToStock() != null ? request.getReturnToStock() : true;
         refund.setReturnToStock(shouldReturnToStock);
 
-        Refund savedRefund = refundRepository.save(refund);
+        Refund savedRefund;
+        try {
+            // saveAndFlush reduce ventana de carrera para duplicados con misma idempotency key.
+            savedRefund = refundRepository.saveAndFlush(refund);
+        } catch (DataIntegrityViolationException ex) {
+            if (idempotencyKey != null) {
+                Optional<Refund> duplicatedRefund = refundRepository.findFirstByPaymentIdAndIdempotencyKey(payment.getId(), idempotencyKey);
+                if (duplicatedRefund.isPresent()) {
+                    return duplicatedRefund.get();
+                }
+            }
+            throw ex;
+        }
 
         // Manejar el stock según la opción de devolución
         if (refundedLine != null && refundedQuantity != null) {
@@ -661,7 +694,7 @@ public class PosOperationsService {
                 stockService.returnStockFromRefund(product, refundedQuantity, savedRefund.getId());
             } else {
                 // El producto se considera desecho (pérdida)
-                String wasteReason = request.getReason() != null ? request.getReason().trim() : "Devolución sin retorno a stock";
+                String wasteReason = normalizedReason != null ? normalizedReason : "Devolución sin retorno a stock";
                 stockService.registerStockWaste(product, savedRefund, refundedQuantity, wasteReason);
             }
         }
@@ -1139,6 +1172,19 @@ public class PosOperationsService {
             return null;
         }
         return token.trim();
+    }
+
+    private String normalizeIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return null;
+        }
+
+        String normalized = idempotencyKey.trim();
+        if (normalized.length() > 120) {
+            throw new RefundConflictException("La clave de idempotencia excede la longitud permitida");
+        }
+
+        return normalized;
     }
 
     private boolean isAdminRole(String role) {

@@ -10,7 +10,12 @@ import java.time.LocalDateTime;
  * Registro de una devolución realizada sobre un cobro ya registrado.
  */
 @Entity
-@Table(name = "refunds")
+@Table(
+    name = "refunds",
+    uniqueConstraints = {
+        @UniqueConstraint(name = "uk_refund_payment_idempotency", columnNames = {"payment_id", "idempotency_key"})
+    }
+)
 @JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class Refund {
 
@@ -45,6 +50,12 @@ public class Refund {
     @Column(nullable = false, length = 120)
     private String refundedBy;
 
+    @Column(name = "idempotency_key", length = 120)
+    private String idempotencyKey;
+
+    @Column(name = "client_attempt_at")
+    private LocalDateTime clientAttemptAt;
+
     @Column(nullable = false)
     private LocalDateTime refundedAt = LocalDateTime.now();
 
@@ -75,6 +86,12 @@ public class Refund {
 
     public String getRefundedBy() { return refundedBy; }
     public void setRefundedBy(String refundedBy) { this.refundedBy = refundedBy; }
+
+    public String getIdempotencyKey() { return idempotencyKey; }
+    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
+
+    public LocalDateTime getClientAttemptAt() { return clientAttemptAt; }
+    public void setClientAttemptAt(LocalDateTime clientAttemptAt) { this.clientAttemptAt = clientAttemptAt; }
 
     public LocalDateTime getRefundedAt() { return refundedAt; }
     public void setRefundedAt(LocalDateTime refundedAt) { this.refundedAt = refundedAt; }

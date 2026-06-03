@@ -93,6 +93,28 @@ public class StockService {
     }
 
     /**
+     * Devuelve stock reservado cuando una línea se reduce o elimina antes del cobro.
+     * Mantiene trazabilidad usando el ID de la orden como referencia del movimiento.
+     */
+    @Transactional
+    public void releaseReservedStockFromOrder(Product product, Integer quantity, Long saleOrderId) {
+        if (product == null || quantity == null || quantity <= 0) {
+            return;
+        }
+
+        if (product.getStock() == null) {
+            // Si el producto no tiene control de stock, no hacer nada
+            return;
+        }
+
+        product.setStock(product.getStock() + quantity);
+        productRepository.save(product);
+
+        StockMovement movement = new StockMovement(product, StockMovementType.RETURN, quantity, saleOrderId);
+        stockMovementRepository.save(movement);
+    }
+
+    /**
      * Registra una pérdida de stock (desecho por devolución).
      * Se utiliza cuando el cliente devuelve un producto pero NO regresa al stock.
      * 

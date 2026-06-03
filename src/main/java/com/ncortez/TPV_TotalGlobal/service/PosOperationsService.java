@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -289,6 +290,7 @@ public class PosOperationsService {
         if (request.getItems() == null || request.getItems().isEmpty()) {
             return saleOrderRepository.findFirstByTableAndStatus(table, OrderStatus.OPEN)
                     .map(existingOrder -> {
+                        releaseReservedStockForOrder(existingOrder);
                         saleOrderRepository.delete(existingOrder);
                         return existingOrder;
                     })
@@ -335,29 +337,67 @@ public class PosOperationsService {
                     return order;
                 });
 
-        saleOrder.getOrderLines().clear();
+        Map<Long, Integer> existingQuantitiesByProduct = aggregateOrderLineQuantities(saleOrder.getOrderLines());
+        Map<Long, Product> existingProductsById = saleOrder.getOrderLines().stream()
+                .filter(line -> line.getProduct() != null && line.getProduct().getId() != null)
+                .collect(Collectors.toMap(
+                        line -> line.getProduct().getId(),
+                        SaleOrderLine::getProduct,
+                        (first, second) -> first
+                ));
 
-        if (request.getNotes() != null && !request.getNotes().isBlank()) {
-            saleOrder.setNotes(request.getNotes().trim());
-        }
-
+        Map<Long, Integer> requestedQuantitiesByProduct = new LinkedHashMap<>();
         for (OrderItemRequest item : request.getItems()) {
             if (item.getProductId() == null || item.getQuantity() == null || item.getQuantity() <= 0) {
                 throw new RuntimeException("Línea de pedido inválida");
             }
+            requestedQuantitiesByProduct.merge(item.getProductId(), item.getQuantity(), Integer::sum);
+        }
 
-            Product product = productRepository.findById(item.getProductId())
-                    .orElseThrow(() -> new RuntimeException("Producto no encontrado: " + item.getProductId()));
+        Map<Long, Product> requestedProductsById = new HashMap<>();
+        for (Long productId : requestedQuantitiesByProduct.keySet()) {
+            Product product = productRepository.findById(productId)
+                    .orElseThrow(() -> new RuntimeException("Producto no encontrado: " + productId));
+            requestedProductsById.put(productId, product);
+        }
 
-            // Descontar stock cuando se agrega el producto al pedido
-            try {
-                stockService.deductStockForSale(product, item.getQuantity(), saleOrder.getId());
-            } catch (RuntimeException e) {
-                // Si hay problema con el stock, lanzar excepción con mensaje para el usuario
-                throw new RuntimeException("Error de stock: " + e.getMessage());
+        Set<Long> affectedProductIds = new java.util.HashSet<>();
+        affectedProductIds.addAll(existingQuantitiesByProduct.keySet());
+        affectedProductIds.addAll(requestedQuantitiesByProduct.keySet());
+
+        // Regla clave: el stock se ajusta comparando lo que había antes con lo que pide el carrito ahora.
+        // - Si el carrito pide MÁS que antes, se descuenta solo la cantidad extra añadida.
+        // - Si el carrito pide MENOS que antes (o elimina el producto), se devuelve solo la cantidad quitada.
+        // Así evitamos descontar el stock dos veces cuando el front envía la orden completa al modificar el carrito.
+        for (Long productId : affectedProductIds) {
+            int existingQuantity = existingQuantitiesByProduct.getOrDefault(productId, 0);
+            int requestedQuantity = requestedQuantitiesByProduct.getOrDefault(productId, 0);
+
+            if (requestedQuantity > existingQuantity) {
+                int additionalQuantity = requestedQuantity - existingQuantity;
+                Product product = requestedProductsById.get(productId);
+                try {
+                    stockService.deductStockForSale(product, additionalQuantity, saleOrder.getId());
+                } catch (RuntimeException e) {
+                    throw new RuntimeException("Error de stock: " + e.getMessage());
+                }
+            } else if (requestedQuantity < existingQuantity) {
+                int returnedQuantity = existingQuantity - requestedQuantity;
+                Product product = existingProductsById.getOrDefault(productId, requestedProductsById.get(productId));
+                stockService.releaseReservedStockFromOrder(product, returnedQuantity, saleOrder.getId());
             }
+        }
 
-            SaleOrderLine orderLine = buildOrderLine(saleOrder, product, item.getQuantity());
+        saleOrder.getOrderLines().clear();
+
+        if (request.getNotes() != null && !request.getNotes().isBlank()) {
+            saleOrder.setNotes(request.getNotes().trim()); 
+            // actualiza notas aunque no cambien las líneas, para permitir editar solo las notas sin tocar el carrito
+        }
+
+        for (Map.Entry<Long, Integer> item : requestedQuantitiesByProduct.entrySet()) {
+            Product product = requestedProductsById.get(item.getKey());
+            SaleOrderLine orderLine = buildOrderLine(saleOrder, product, item.getValue());
             saleOrder.getOrderLines().add(orderLine);
         }
 
@@ -429,7 +469,11 @@ public class PosOperationsService {
         }
 
         saleOrderRepository.findFirstByTableAndStatus(table, OrderStatus.OPEN)
-                .ifPresent(saleOrderRepository::delete);
+                .ifPresent(order -> {
+                    // Al cancelar pedido abierto se revierte toda la reserva de stock de sus líneas.
+                    releaseReservedStockForOrder(order);
+                    saleOrderRepository.delete(order);
+                });
 
         if (tableNumber != 0) {
             table.setAttendedBy(null);
@@ -859,7 +903,8 @@ public class PosOperationsService {
                     .findByOpenedAtGreaterThanEqualOrderByOpenedAtDesc(startDate.atStartOfDay());
         }
 
-        LocalDateTime end = endDate.plusDays(1).atStartOfDay().minusNanos(1);
+        LocalDate safeEndDate = endDate != null ? endDate : LocalDate.now();
+        LocalDateTime end = safeEndDate.plusDays(1).atStartOfDay().minusNanos(1);
         return cashRegisterShiftRepository.findByOpenedAtLessThanEqualOrderByOpenedAtDesc(end);
     }
 
@@ -904,7 +949,7 @@ public class PosOperationsService {
                 });
 
                 Integer lineQuantity = line.getQuantity();
-                int quantity = lineQuantity != null ? lineQuantity.intValue() : 0;
+                int quantity = lineQuantity != null ? lineQuantity : 0;
                 accumulator.quantitySold += quantity;
                 accumulator.totalSales = accumulator.totalSales.add(line.getSubtotal() != null ? line.getSubtotal() : BigDecimal.ZERO);
                 accumulator.totalProfit = accumulator.totalProfit.add(line.getProfit() != null ? line.getProfit() : BigDecimal.ZERO);
@@ -1046,6 +1091,48 @@ public class PosOperationsService {
         orderLine.setProfit(scale(profit));
 
         return orderLine;
+    }
+    /**
+     * Acumula cantidades por producto en una lista de líneas de pedido.
+     * Se usa para comparar estado anterior vs. nuevo de una orden y calcular el DELTA de stock.
+     * Delta es la diferencia entre el valor inicial y el valor final*
+     */
+    private Map<Long, Integer> aggregateOrderLineQuantities(List<SaleOrderLine> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<Long, Integer> totals = new HashMap<>();
+        for (SaleOrderLine line : lines) {
+            if (line.getProduct() == null || line.getProduct().getId() == null) {
+                continue;
+            }
+
+            Long productId = line.getProduct().getId();
+            Integer quantityValue = line.getQuantity();
+            int quantity = quantityValue != null ? quantityValue : 0;
+            totals.merge(productId, quantity, Integer::sum);
+        }
+
+        return totals;
+    }
+
+    /**
+     * Libera la reserva de stock de todas las líneas de una orden abierta.
+     * Se utiliza al cancelar una orden o al limpiar sus líneas antes de rearmarla con un nuevo estado.
+     */
+    private void releaseReservedStockForOrder(SaleOrder saleOrder) {
+        if (saleOrder == null || saleOrder.getOrderLines() == null || saleOrder.getOrderLines().isEmpty()) {
+            return;
+        }
+
+        for (SaleOrderLine line : saleOrder.getOrderLines()) {
+            stockService.releaseReservedStockFromOrder(
+                    line.getProduct(),
+                    line.getQuantity(),
+                    saleOrder.getId()
+            );
+        }
     }
 
     /**

@@ -44,8 +44,15 @@ public class PosOperationsController {
         try {
             SaleOrder saleOrder = posOperationsService.openOrUpdateOrder(request);
             return ResponseEntity.ok(saleOrder);
+        } catch (ObjectOptimisticLockingFailureException e) {
+            // Dos peticiones simultáneas intentaron modificar el stock del mismo producto a la vez.
+            // JPA detecta el conflicto gracias al campo @Version en Product y rechaza la segunda.
+            // Devolvemos 409 Conflict para que el front pueda distinguirlo de un error de validación normal.
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(new ApiMessageResponse(
+                        "El stock de uno de los productos fue modificado por otra operación simultánea. Por favor, inténtalo de nuevo."));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -78,7 +85,7 @@ public class PosOperationsController {
             posOperationsService.clearOpenOrder(tableNumber, username, sessionToken, role);
             return ResponseEntity.ok().build();
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -95,7 +102,7 @@ public class PosOperationsController {
             Payment payment = posOperationsService.registerPayment(request);
             return ResponseEntity.ok(payment);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -121,7 +128,7 @@ public class PosOperationsController {
             TicketDetailResponse ticket = posOperationsService.getTicketByPaymentId(paymentId);
             return ResponseEntity.ok(ticket);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -154,9 +161,9 @@ public class PosOperationsController {
             Refund refund = posOperationsService.registerRefund(request);
             return ResponseEntity.ok(refund);
         } catch (RefundConflictException | ObjectOptimisticLockingFailureException e) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiMessageResponse(e.getMessage()));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -188,7 +195,7 @@ public class PosOperationsController {
             CashRegisterShift shift = posOperationsService.openShift(request);
             return ResponseEntity.ok(shift);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -225,7 +232,7 @@ public class PosOperationsController {
         try {
             return ResponseEntity.ok(posOperationsService.getShiftHistory(startDate, endDate));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -240,7 +247,7 @@ public class PosOperationsController {
         try {
             return ResponseEntity.ok(posOperationsService.getShiftDetail(shiftId));
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 
@@ -256,7 +263,7 @@ public class PosOperationsController {
             CashRegisterShift shift = posOperationsService.closeShift(request);
             return ResponseEntity.ok(shift);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
         }
     }
 

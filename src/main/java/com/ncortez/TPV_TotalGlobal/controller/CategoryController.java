@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Controlador REST para la gestión de categorías de productos del TPV.
@@ -79,7 +80,7 @@ public class CategoryController {
             );
             return ResponseEntity.ok(category);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 
@@ -101,7 +102,7 @@ public class CategoryController {
             );
             return ResponseEntity.ok(category);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 
@@ -117,7 +118,7 @@ public class CategoryController {
             Category category = categoryService.toggleCategoryActive(id, request.isActive());
             return ResponseEntity.ok(category);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 
@@ -132,7 +133,7 @@ public class CategoryController {
             categoryService.deleteCategory(id);
             return ResponseEntity.ok("Categoría eliminada correctamente");
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 

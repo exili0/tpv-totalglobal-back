@@ -30,4 +30,11 @@ public interface CategoryRepository extends JpaRepository<Category, Long> {
      * @return Lista de categorías raíz activas
      */
     List<Category> findByParentCategoryIsNullAndActiveTrue();
+
+    /**
+     * Comprueba si existe alguna subcategoría asociada a una categoría padre.
+     * @param parentCategoryId ID de la categoría padre
+     * @return true si hay subcategorías vinculadas
+     */
+    boolean existsByParentCategoryId(Long parentCategoryId);
 }

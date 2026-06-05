@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Controlador REST para la gestión de productos del TPV.
@@ -98,7 +99,7 @@ public class ProductController {
             );
             return ResponseEntity.ok(product);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 
@@ -125,7 +126,7 @@ public class ProductController {
             );
             return ResponseEntity.ok(product);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 
@@ -141,7 +142,7 @@ public class ProductController {
             Product product = productService.toggleProductActive(id, request.isActive());
             return ResponseEntity.ok(product);
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 
@@ -156,7 +157,7 @@ public class ProductController {
             productService.deleteProduct(id);
             return ResponseEntity.ok("Producto eliminado correctamente");
         } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
 

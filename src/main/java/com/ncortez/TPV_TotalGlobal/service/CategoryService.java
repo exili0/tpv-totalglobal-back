@@ -2,6 +2,7 @@ package com.ncortez.TPV_TotalGlobal.service;
 
 import com.ncortez.TPV_TotalGlobal.entity.Category;
 import com.ncortez.TPV_TotalGlobal.repository.CategoryRepository;
+import com.ncortez.TPV_TotalGlobal.repository.ProductRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -17,6 +18,9 @@ public class CategoryService {
 
     @Autowired
     private CategoryRepository categoryRepository;
+
+    @Autowired
+    private ProductRepository productRepository;
 
     /**
      * Obtiene todas las categorías del sistema (incluidas las inactivas).
@@ -139,9 +143,17 @@ public class CategoryService {
      * @throws RuntimeException Si la categoría no existe
      */
     public void deleteCategory(Long id) {
-        if (!categoryRepository.existsById(id)) {
-            throw new RuntimeException("Categoría no encontrada");
+        Category category = categoryRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("Categoría no encontrada"));
+
+        if (categoryRepository.existsByParentCategoryId(category.getId())) {
+            throw new RuntimeException("No se puede eliminar una categoría que tiene subcategorías");
         }
+
+        if (productRepository.existsByCategoryId(category.getId())) {
+            throw new RuntimeException("No se puede eliminar una categoría que tiene productos asociados");
+        }
+
         categoryRepository.deleteById(id);
     }
 }

@@ -33,4 +33,11 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
      * @return Lista de productos activos de esa categoría
      */
     List<Product> findByCategoryIdAndActiveTrue(Long categoryId);
+
+    /**
+     * Comprueba si existe algún producto asociado a una categoría.
+     * @param categoryId ID de la categoría
+     * @return true si hay productos vinculados a la categoría
+     */
+    boolean existsByCategoryId(Long categoryId);
 }

@@ -280,4 +280,16 @@ public class PosOperationsController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         return ResponseEntity.ok(posOperationsService.getDailyZReport(date));
     }
+
+    /**
+     * Simula la recepción de un pedido de Glovo y lo registra como ticket cobrado en TPV.
+     */
+    @PostMapping("/integrations/glovo/simulate")
+    public ResponseEntity<?> simulateGlovoOrder(@RequestBody GlovoSimulatedOrderRequest request) {
+        try {
+            return ResponseEntity.ok(posOperationsService.simulateGlovoOrder(request));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(new ApiMessageResponse(e.getMessage()));
+        }
+    }
 }

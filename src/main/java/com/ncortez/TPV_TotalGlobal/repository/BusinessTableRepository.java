@@ -12,4 +12,7 @@ import java.util.Optional;
 public interface BusinessTableRepository extends JpaRepository<BusinessTable, Long> {
     Optional<BusinessTable> findByTableNumber(Integer tableNumber);
     List<BusinessTable> findByActiveTrueOrderByTableNumberAsc();
+    // Cambios para asignación automática de mesas virtuales a pedidos Glovo
+    Optional<BusinessTable> findFirstByDisplayNameStartingWithOrderByTableNumberDesc(String displayNamePrefix);
+    Optional<BusinessTable> findFirstByTableNumberGreaterThanEqualOrderByTableNumberDesc(Integer minTableNumber);
 }

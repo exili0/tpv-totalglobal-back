@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ncortez.TPV_TotalGlobal.dto.CloseShiftRequest;
 import com.ncortez.TPV_TotalGlobal.dto.CreateOrderRequest;
 import com.ncortez.TPV_TotalGlobal.dto.DailyZReportResponse;
+import com.ncortez.TPV_TotalGlobal.dto.GlovoSimulatedOrderRequest;
+import com.ncortez.TPV_TotalGlobal.dto.GlovoSimulationResponse;
 import com.ncortez.TPV_TotalGlobal.dto.OpenShiftRequest;
 import com.ncortez.TPV_TotalGlobal.dto.OrderItemRequest;
 import com.ncortez.TPV_TotalGlobal.dto.PaymentRequest;
@@ -52,6 +54,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Servicio principal de negocio del TPV: mesas, ÃƒÂ³rdenes, cobros, turnos y reporte Z.
@@ -171,7 +174,7 @@ public class PosOperationsService {
             throw new RuntimeException("La mesa no estÃƒÂ¡ operativa");
         }
 
-        if (tableNumber != 0) {
+        if (tableNumber != 0 && !isGlovoTable(table)) {
             String attendedBy = normalizeUsername(table.getAttendedBy());
             String lockToken = normalizeToken(table.getLockToken());
             boolean sameOperator = attendedBy != null && attendedBy.equalsIgnoreCase(safeUsername);
@@ -286,9 +289,17 @@ public class PosOperationsService {
         if (!table.isActive() || table.getStatus() == TableStatus.INACTIVE) {
             throw new RuntimeException("La mesa no estÃƒÂ¡ operativa");
         }
+        // Bloqueo de concurrencia optimista: si la mesa ya tiene un pedido abierto con líneas,
+        // no se puede modificar desde otro cliente
+        Optional<SaleOrder> existingOpenOrder = saleOrderRepository.findFirstByTableAndStatus(table, OrderStatus.OPEN);
 
         if (request.getItems() == null || request.getItems().isEmpty()) {
-            return saleOrderRepository.findFirstByTableAndStatus(table, OrderStatus.OPEN)
+            // si el request viene sin líneas, se interpreta como cancelación del pedido abierto: se libera el stock reservado y se borra el pedido
+            if (isGlovoTable(table) && existingOpenOrder.isPresent() && !existingOpenOrder.get().getOrderLines().isEmpty()) {
+                throw new RuntimeException("Pedido Glovo bloqueado: no se puede eliminar ni vaciar el carrito");
+            }
+
+            return existingOpenOrder
                     .map(existingOrder -> {
                         releaseReservedStockForOrder(existingOrder);
                         saleOrderRepository.delete(existingOrder);
@@ -302,7 +313,9 @@ public class PosOperationsService {
                     });
         }
 
-        if (tableNumber != 0) {
+        if (tableNumber != 0 && !isGlovoTable(table)) {
+            // si la mesa no es la barra ni una mesa virtual Glovo, 
+            // se aplica lógica de bloqueo por sesión para evitar que varios camareros modifiquen el mismo pedido al mismo tiempo
             String attendedBy = normalizeUsername(table.getAttendedBy());
             String lockToken = normalizeToken(table.getLockToken());
             boolean sameOperator = attendedBy != null && attendedBy.equalsIgnoreCase(operatorUsername);
@@ -329,7 +342,7 @@ public class PosOperationsService {
             businessTableRepository.save(table);
         }
 
-        SaleOrder saleOrder = saleOrderRepository.findFirstByTableAndStatus(table, OrderStatus.OPEN)
+        SaleOrder saleOrder = existingOpenOrder
                 .orElseGet(() -> {
                     SaleOrder order = new SaleOrder();
                     order.setTable(table);
@@ -352,6 +365,14 @@ public class PosOperationsService {
                 throw new RuntimeException("Línea de pedido inválida");
             }
             requestedQuantitiesByProduct.merge(item.getProductId(), item.getQuantity(), Integer::sum);
+        }
+
+        if (isGlovoTable(table) && existingOpenOrder.isPresent() && !existingOpenOrder.get().getOrderLines().isEmpty()) {
+            if (!existingQuantitiesByProduct.equals(requestedQuantitiesByProduct)) {
+                throw new RuntimeException("Pedido Glovo bloqueado: no se pueden modificar sus productos");
+            }
+            // Permitimos cobrar con la misma cesta, pero seguimos el flujo normal de guardado
+            // para evitar errores de serialización al devolver entidades parcialmente cargadas.
         }
 
         Map<Long, Product> requestedProductsById = new HashMap<>();
@@ -452,6 +473,10 @@ public class PosOperationsService {
 
         BusinessTable table = businessTableRepository.findByTableNumber(tableNumber)
                 .orElseThrow(() -> new RuntimeException("Mesa no encontrada: " + tableNumber));
+
+        if (isGlovoTable(table)) {
+            throw new RuntimeException("Pedido Glovo bloqueado: no se puede limpiar el carrito desde TPV");
+        }
 
         if (tableNumber != 0) {
             String attendedBy = normalizeUsername(table.getAttendedBy());
@@ -614,6 +639,12 @@ public class PosOperationsService {
         if (saleOrder.getTable() == null || saleOrder.getTable().getTableNumber() == null) {
             return "Sin mesa";
         }
+
+        String displayName = trimToNull(saleOrder.getTable().getDisplayName());
+        if (displayName != null && displayName.toUpperCase().startsWith("GLOVO ")) {
+            return displayName;
+        }
+
         Integer tableNumber = saleOrder.getTable().getTableNumber();
         return tableNumber == 0 ? "Barra" : "Mesa " + tableNumber;
     }
@@ -832,6 +863,12 @@ public class PosOperationsService {
             table.setAttendedBy(null);
             table.setLockedAt(null);
             table.setLockToken(null);
+            // si es una mesa de integración (Glovo), al quedar libre se desactiva para que no vuelva a salir en el selector de mesas,
+            //  ya que solo se usa para pedidos online.
+            if (isGlovoTable(table)) {
+                // Mesa virtual de integración: una vez cobrada deja de estar disponible en selector.
+                table.setActive(false);
+            }
             businessTableRepository.save(table);
         }
 
@@ -1058,7 +1095,168 @@ public class PosOperationsService {
         response.setOtherSales(scale(otherSales));
         return response;
     }
+    ///////////// SIMULACIÓN DE PEDIDOS GLOVO //////////
+    /**
+     * Simula la entrada de un pedido despachado de Glovo.
+     *
+     * - Crea una mesa virtual "Glovo N" para el pedido.
+     * - Si el pago es CASH, deja el pedido abierto para cobro manual posterior.
+     * - Si no es CASH (ej. DELAYED), genera ticket de forma automática.
+     */
+    @Transactional
+    public GlovoSimulationResponse simulateGlovoOrder(GlovoSimulatedOrderRequest request) {
+        if (request == null) {
+            throw new RuntimeException("El cuerpo de simulación es obligatorio");
+        }
 
+        if (request.getItems() == null || request.getItems().isEmpty()) {
+            throw new RuntimeException("Debes incluir al menos un producto para simular el pedido");
+        }
+
+        BusinessTable glovoTable = createGlovoVirtualTable();
+
+        List<OrderItemRequest> mappedItems = request.getItems().stream().map(item -> {
+            if (item == null || item.getProductId() == null || item.getQuantity() == null || item.getQuantity() <= 0) {
+                throw new RuntimeException("Todas las líneas del pedido Glovo deben tener productId y quantity válidos");
+            }
+            OrderItemRequest orderItem = new OrderItemRequest();
+            orderItem.setProductId(item.getProductId());
+            orderItem.setQuantity(item.getQuantity());
+            return orderItem;
+        }).collect(Collectors.toList());
+
+        CreateOrderRequest createOrderRequest = new CreateOrderRequest();
+        createOrderRequest.setTableNumber(glovoTable.getTableNumber());
+        createOrderRequest.setItems(mappedItems);
+        createOrderRequest.setOperatorUsername(resolveSimulationOperator(request));
+        createOrderRequest.setOperatorSessionToken("glovo-simulator-session");
+        createOrderRequest.setNotes(buildGlovoOrderNotes(request));
+
+        SaleOrder saleOrder = openOrUpdateOrder(createOrderRequest);
+
+        PaymentMethod paymentMethod = mapGlovoPaymentMethod(request.getPaymentMethod());
+        Payment payment = null;
+
+        if (paymentMethod != PaymentMethod.CASH) {
+            PaymentRequest paymentRequest = new PaymentRequest();
+            paymentRequest.setSaleOrderId(saleOrder.getId());
+            paymentRequest.setPaymentMethod(paymentMethod);
+            paymentRequest.setAmount(saleOrder.getTotal());
+            paymentRequest.setReceivedAmount(saleOrder.getTotal());
+            paymentRequest.setCashierUsername(resolveSimulationOperator(request));
+            payment = registerPayment(paymentRequest);
+        }
+
+        GlovoSimulationResponse response = new GlovoSimulationResponse();
+        response.setGlovoOrderId(trimToNull(request.getGlovoOrderId()));
+        response.setOrderCode(trimToNull(request.getOrderCode()));
+        response.setTableNumber(glovoTable.getTableNumber());
+        response.setServiceLabel(glovoTable.getDisplayName());
+        response.setSaleOrderId(saleOrder.getId());
+        response.setPendingCashPayment(paymentMethod == PaymentMethod.CASH);
+        response.setTotalAmount(scale(saleOrder.getTotal()));
+        response.setTpvPaymentMethod(paymentMethod.name());
+
+        if (payment != null) {
+            response.setPaymentId(payment.getId());
+            response.setPaidAt(payment.getPaidAt());
+            response.setMessage("Pedido Glovo simulado y ticket generado correctamente");
+        } else {
+            response.setPaymentId(null);
+            response.setPaidAt(null);
+            response.setMessage("Pedido Glovo creado en CASH pendiente de cobro manual");
+        }
+
+        return response;
+    }
+
+    private BusinessTable createGlovoVirtualTable() {
+        int nextGlovoTableNumber = businessTableRepository
+                .findFirstByTableNumberGreaterThanEqualOrderByTableNumberDesc(1000)
+                .map(existing -> existing.getTableNumber() + 1)
+                .orElse(1000);
+
+        int nextGlovoOrdinal = businessTableRepository
+                .findFirstByDisplayNameStartingWithOrderByTableNumberDesc("Glovo ")
+                .map(existing -> {
+                    String displayName = trimToNull(existing.getDisplayName());
+                    if (displayName == null) {
+                        return 1;
+                    }
+
+                    String numericPart = displayName.replaceFirst("(?i)^glovo\\s+", "").trim();
+                    try {
+                        return Integer.parseInt(numericPart) + 1;
+                    } catch (NumberFormatException ex) {
+                        return 1;
+                    }
+                })
+                .orElse(1);
+
+        BusinessTable glovoTable = new BusinessTable(nextGlovoTableNumber, "Glovo " + nextGlovoOrdinal, 1);
+        glovoTable.setStatus(TableStatus.OCCUPIED);
+        glovoTable.setActive(true);
+        glovoTable.setAttendedBy(null);
+        glovoTable.setLockedAt(null);
+        glovoTable.setLockToken(null);
+        return businessTableRepository.save(glovoTable);
+    }
+
+    private String resolveSimulationOperator(GlovoSimulatedOrderRequest request) {
+        String normalizedOperator = normalizeUsername(request.getOperatorUsername());
+        return normalizedOperator != null ? normalizedOperator : "glovo-simulator";
+    }
+
+    private String buildGlovoOrderNotes(GlovoSimulatedOrderRequest request) {
+        String glovoOrderId = trimToNull(request.getGlovoOrderId());
+        String orderCode = trimToNull(request.getOrderCode());
+        String storeId = trimToNull(request.getStoreId());
+        String customerName = trimToNull(request.getCustomerName());
+        String specialRequirements = trimToNull(request.getSpecialRequirements());
+
+        return Stream.of(
+                        "[GLOVO-SIM]",
+                        glovoOrderId != null ? "order_id=" + glovoOrderId : null,
+                        orderCode != null ? "order_code=" + orderCode : null,
+                        storeId != null ? "store_id=" + storeId : null,
+                        customerName != null ? "customer=" + customerName : null,
+                        specialRequirements != null ? "special_requirements=" + specialRequirements : null
+                )
+                .filter(value -> value != null && !value.isBlank())
+                .collect(Collectors.joining(" | "));
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private PaymentMethod mapGlovoPaymentMethod(String glovoPaymentMethod) {
+        if (glovoPaymentMethod == null) {
+            return PaymentMethod.OTHER;
+        }
+
+        String normalized = glovoPaymentMethod.trim().toUpperCase();
+        if ("CASH".equals(normalized)) {
+            return PaymentMethod.CASH;
+        }
+
+        // DELAYED y cualquier otro método de Glovo se registran como OTHER en TPV.
+        return PaymentMethod.OTHER;
+    }
+
+    private boolean isGlovoTable(BusinessTable table) {
+        if (table == null) {
+            return false;
+        }
+
+        String displayName = trimToNull(table.getDisplayName());
+        return displayName != null && displayName.toUpperCase().startsWith("GLOVO ");
+    }
+    ///////////////////////
     /**
      * Construye una línea de pedido con todos los cálculos económicos:
      * subtotal sin IVA, importe de IVA, total con IVA, coste y beneficio unitario.

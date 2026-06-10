@@ -4,6 +4,7 @@ import java.util.Date;
 import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import com.ncortez.TPV_TotalGlobal.dto.RestorePasswordRequest;
@@ -25,6 +26,9 @@ public class AuthService {
 
     @Autowired
     private SecurityAnswerRepository securityRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
 
     /**
      * Valida credenciales, gestiona bloqueos por intentos fallidos y detecta primer acceso.
@@ -56,7 +60,7 @@ public class AuthService {
         }
 
         // 3. Validar contraseña
-        if (user.getPassword() == null || !password.equals(user.getPassword())) {
+        if (!isPasswordValid(user, password)) {
             user.setFailedAttempts(user.getFailedAttempts() + 1);
 
             if (user.getFailedAttempts() >= 4) {
@@ -160,7 +164,7 @@ public class AuthService {
             return "La contraseña no puede estar vacía";
         }
 
-        user.setPassword(newPassword.trim());
+        user.setPassword(passwordEncoder.encode(newPassword.trim()));
         user.setFailedAttempts(0);
         
         if (user.isFirstLogin()) {
@@ -169,5 +173,34 @@ public class AuthService {
 
         userRepository.save(user);
         return "OK";
+    }
+
+    /**
+     * Valida contraseña soportando compatibilidad temporal con registros legacy en texto plano.
+     * Si detecta coincidencia legacy, migra automáticamente a hash BCrypt.
+     */
+    private boolean isPasswordValid(UserEntity user, String rawPassword) {
+        if (rawPassword == null || user.getPassword() == null) {
+            return false;
+        }
+
+        boolean matchesHashed;
+        try {
+            matchesHashed = passwordEncoder.matches(rawPassword, user.getPassword());
+        } catch (IllegalArgumentException ex) {
+            matchesHashed = false;
+        }
+
+        if (matchesHashed) {
+            return true;
+        }
+
+        if (rawPassword.equals(user.getPassword())) {
+            user.setPassword(passwordEncoder.encode(rawPassword));
+            userRepository.save(user);
+            return true;
+        }
+
+        return false;
     }
 }

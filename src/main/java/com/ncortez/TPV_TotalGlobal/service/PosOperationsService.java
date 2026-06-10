@@ -7,6 +7,7 @@ import com.ncortez.TPV_TotalGlobal.dto.CreateOrderRequest;
 import com.ncortez.TPV_TotalGlobal.dto.DailyZReportResponse;
 import com.ncortez.TPV_TotalGlobal.dto.GlovoSimulatedOrderRequest;
 import com.ncortez.TPV_TotalGlobal.dto.GlovoSimulationResponse;
+import com.ncortez.TPV_TotalGlobal.dto.MoveTableRequest;
 import com.ncortez.TPV_TotalGlobal.dto.OpenShiftRequest;
 import com.ncortez.TPV_TotalGlobal.dto.OrderItemRequest;
 import com.ncortez.TPV_TotalGlobal.dto.PaymentRequest;
@@ -130,6 +131,38 @@ public class PosOperationsService {
             table.setDisplayName("Bar");
         }
 
+        return businessTableRepository.save(table);
+    }
+
+    /**
+     * Desactiva una mesa para sacarla de operación sin perder trazabilidad histórica.
+     */
+    @Transactional
+    public BusinessTable deleteTable(Integer tableNumber) {
+        if (tableNumber == null) {
+            throw new RuntimeException("El número de mesa es obligatorio");
+        }
+        if (tableNumber < 0) {
+            throw new RuntimeException("El número de mesa no puede ser negativo");
+        }
+        if (tableNumber == 0) {
+            throw new RuntimeException("La mesa 0 (Barra) no se puede eliminar");
+        }
+
+        BusinessTable table = businessTableRepository.findByTableNumber(tableNumber)
+                .orElseThrow(() -> new RuntimeException("Mesa no encontrada: " + tableNumber));
+
+        saleOrderRepository.findFirstByTableAndStatus(table, OrderStatus.OPEN).ifPresent(order -> {
+            if (order.getOrderLines() != null && !order.getOrderLines().isEmpty()) {
+                throw new RuntimeException("No se puede eliminar una mesa con comanda abierta");
+            }
+        });
+
+        table.setActive(false);
+        table.setStatus(TableStatus.INACTIVE);
+        table.setAttendedBy(null);
+        table.setLockedAt(null);
+        table.setLockToken(null);
         return businessTableRepository.save(table);
     }
 
@@ -507,6 +540,121 @@ public class PosOperationsService {
             table.setStatus(TableStatus.FREE);
             businessTableRepository.save(table);
         }
+    }
+
+    /**
+     * Mueve una comanda abierta desde una mesa origen a una mesa destino.
+     *
+     * Objetivo: mantener continuidad operativa cuando clientes cambian de mesa,
+     * sin perder líneas ni totales ya registrados en la orden.
+     */
+    @Transactional
+    public SaleOrder moveOpenOrderBetweenTables(MoveTableRequest request, String username, String role) {
+        if (request == null) {
+            throw new RuntimeException("El cuerpo de la solicitud es obligatorio");
+        }
+
+        Integer fromTableNumber = request.getFromTableNumber();
+        Integer toTableNumber = request.getToTableNumber();
+
+        if (fromTableNumber == null || toTableNumber == null) {
+            throw new RuntimeException("Mesa origen y destino son obligatorias");
+        }
+
+        if (fromTableNumber.equals(toTableNumber)) {
+            throw new RuntimeException("La mesa origen y destino no pueden ser la misma");
+        }
+
+        if (fromTableNumber < 0 || toTableNumber < 0) {
+            throw new RuntimeException("Los números de mesa no pueden ser negativos");
+        }
+
+        ensureOpenShiftForOperations();
+
+        String safeUsername = normalizeUsername(username);
+        if (safeUsername == null) {
+            throw new RuntimeException("El usuario autenticado es obligatorio");
+        }
+
+        String safeSessionToken = normalizeToken(request.getSessionToken());
+        if (safeSessionToken == null) {
+            throw new RuntimeException("La sesión es obligatoria");
+        }
+
+        BusinessTable sourceTable = businessTableRepository.findByTableNumber(fromTableNumber)
+                .orElseThrow(() -> new RuntimeException("Mesa origen no encontrada: " + fromTableNumber));
+
+        BusinessTable targetTable = businessTableRepository.findByTableNumber(toTableNumber)
+                .orElseThrow(() -> new RuntimeException("Mesa destino no encontrada: " + toTableNumber));
+
+        if (!sourceTable.isActive() || sourceTable.getStatus() == TableStatus.INACTIVE) {
+            throw new RuntimeException("La mesa origen no está operativa");
+        }
+
+        if (!targetTable.isActive() || targetTable.getStatus() == TableStatus.INACTIVE) {
+            throw new RuntimeException("La mesa destino no está operativa");
+        }
+
+        if (isGlovoTable(sourceTable) || isGlovoTable(targetTable)) {
+            throw new RuntimeException("No se puede mover una comanda hacia/desde la mesa de Glovo");
+        }
+
+        SaleOrder openSourceOrder = saleOrderRepository.findFirstByTableAndStatus(sourceTable, OrderStatus.OPEN)
+                .orElseThrow(() -> new RuntimeException("La mesa origen no tiene una comanda abierta"));
+
+        if (openSourceOrder.getOrderLines() == null || openSourceOrder.getOrderLines().isEmpty()) {
+            throw new RuntimeException("La comanda origen no tiene líneas para mover");
+        }
+
+        Optional<SaleOrder> openTargetOrder = saleOrderRepository.findFirstByTableAndStatus(targetTable, OrderStatus.OPEN);
+        if (openTargetOrder.isPresent() && openTargetOrder.get().getOrderLines() != null && !openTargetOrder.get().getOrderLines().isEmpty()) {
+            throw new RuntimeException("La mesa destino ya tiene una comanda abierta");
+        }
+
+        String sourceAttendedBy = normalizeUsername(sourceTable.getAttendedBy());
+        String sourceLockToken = normalizeToken(sourceTable.getLockToken());
+        boolean sameOperator = sourceAttendedBy != null && sourceAttendedBy.equalsIgnoreCase(safeUsername);
+        boolean adminOverride = isAdminRole(role);
+
+        if (!sameOperator && !adminOverride) {
+            throw new RuntimeException("No tienes permisos para mover la comanda de esta mesa");
+        }
+
+        if (sourceLockToken != null && !sourceLockToken.equals(safeSessionToken) && !adminOverride) {
+            throw new RuntimeException("La mesa origen está bloqueada por otra sesión");
+        }
+
+        String targetAttendedBy = normalizeUsername(targetTable.getAttendedBy());
+        String targetLockToken = normalizeToken(targetTable.getLockToken());
+        boolean targetLockedByOther = targetLockToken != null
+                && !targetLockToken.equals(safeSessionToken)
+                && targetAttendedBy != null
+                && !targetAttendedBy.equalsIgnoreCase(safeUsername)
+                && !adminOverride;
+
+        if (targetLockedByOther) {
+            throw new RuntimeException("La mesa destino está siendo atendida por otro usuario");
+        }
+
+        // Transferencia efectiva: misma orden, distinta mesa.
+        openSourceOrder.setTable(targetTable);
+        SaleOrder movedOrder = saleOrderRepository.save(openSourceOrder);
+
+        // La mesa origen vuelve a libre.
+        sourceTable.setAttendedBy(null);
+        sourceTable.setLockedAt(null);
+        sourceTable.setLockToken(null);
+        sourceTable.setStatus(TableStatus.FREE);
+        businessTableRepository.save(sourceTable);
+
+        // La mesa destino queda ocupada por el operador actual.
+        targetTable.setAttendedBy(safeUsername);
+        targetTable.setLockedAt(LocalDateTime.now());
+        targetTable.setLockToken(safeSessionToken);
+        targetTable.setStatus(TableStatus.OCCUPIED);
+        businessTableRepository.save(targetTable);
+
+        return movedOrder;
     }
 
     /**
@@ -897,6 +1045,7 @@ public class PosOperationsService {
         shift.setOpenedAt(LocalDateTime.now());
         shift.setOpeningFloat(request != null && request.getOpeningFloat() != null ? request.getOpeningFloat() : BigDecimal.ZERO);
         shift.setOpenedBy(request != null ? request.getOpenedBy() : null);
+        shift.setOpeningStockSnapshot(buildCurrentStockSnapshot());
 
         return cashRegisterShiftRepository.save(shift);
     }
@@ -961,7 +1110,8 @@ public class PosOperationsService {
         LocalDateTime end = shift.getClosedAt() != null ? shift.getClosedAt() : LocalDateTime.now();
         List<Payment> payments = paymentRepository.findByPaidAtBetweenWithOrderLinesAndProducts(start, end);
 
-        Map<Long, Integer> snapshotMap = parseClosingStockSnapshot(shift.getClosingStockSnapshot());
+        Map<Long, Integer> openingSnapshotMap = parseStockSnapshot(shift.getOpeningStockSnapshot());
+        Map<Long, Integer> closingSnapshotMap = parseStockSnapshot(shift.getClosingStockSnapshot());
         Map<Long, ProductAccumulator> productTotals = new HashMap<>();
 
         for (Payment payment : payments) {
@@ -988,7 +1138,8 @@ public class PosOperationsService {
                 Integer lineQuantity = line.getQuantity();
                 int quantity = lineQuantity != null ? lineQuantity : 0;
                 accumulator.quantitySold += quantity;
-                accumulator.totalSales = accumulator.totalSales.add(line.getSubtotal() != null ? line.getSubtotal() : BigDecimal.ZERO);
+                // Ventas en bruto (PVP), consistentes con caja y ticket cobrado.
+                accumulator.totalSales = accumulator.totalSales.add(line.getTotal() != null ? line.getTotal() : BigDecimal.ZERO);
                 accumulator.totalProfit = accumulator.totalProfit.add(line.getProfit() != null ? line.getProfit() : BigDecimal.ZERO);
             }
         }
@@ -1001,7 +1152,8 @@ public class PosOperationsService {
                     response.setQuantitySold(total.quantitySold);
                     response.setTotalSales(scale(total.totalSales));
                     response.setTotalProfit(scale(total.totalProfit));
-                    response.setStockAtClose(snapshotMap.get(total.productId));
+                    response.setStockAtOpen(openingSnapshotMap.get(total.productId));
+                    response.setStockAtClose(closingSnapshotMap.get(total.productId));
                     return response;
                 })
                 .sorted(Comparator.comparing(
@@ -1258,8 +1410,12 @@ public class PosOperationsService {
     }
     ///////////////////////
     /**
-     * Construye una línea de pedido con todos los cálculos económicos:
-     * subtotal sin IVA, importe de IVA, total con IVA, coste y beneficio unitario.
+     * Construye una línea de pedido usando precio de producto con IVA incluido.
+     *
+     * Reglas:
+     * - product.price se considera PVP final por unidad.
+     * - total de línea = PVP * cantidad.
+     * - subtotal neto e IVA se extraen desde ese total para auditoría.
      */
     private SaleOrderLine buildOrderLine(SaleOrder saleOrder, Product product, Integer quantity) {
         SaleOrderLine orderLine = new SaleOrderLine();
@@ -1272,12 +1428,16 @@ public class PosOperationsService {
         BigDecimal unitPrice = product.getPrice();
         BigDecimal unitCost = product.getCostPrice() != null ? product.getCostPrice() : BigDecimal.ZERO;
 
-        BigDecimal subtotal = unitPrice.multiply(BigDecimal.valueOf(quantity.longValue()));
-        BigDecimal vatAmount = subtotal.multiply(BigDecimal.valueOf(product.getVatPercent()))
-                .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
-        BigDecimal total = subtotal.add(vatAmount);
+        BigDecimal total = unitPrice.multiply(BigDecimal.valueOf(quantity.longValue()));
+        BigDecimal vatDivisor = BigDecimal.valueOf(100L + product.getVatPercent());
+        BigDecimal vatAmount = product.getVatPercent() > 0
+            ? total.multiply(BigDecimal.valueOf(product.getVatPercent()))
+                .divide(vatDivisor, 2, RoundingMode.HALF_UP)
+            : BigDecimal.ZERO;
+        BigDecimal subtotal = total.subtract(vatAmount);
 
         BigDecimal costTotal = unitCost.multiply(BigDecimal.valueOf(quantity.longValue()));
+        // Beneficio real = neto sin IVA - coste proveedor (costPrice * cantidad).
         BigDecimal profit = subtotal.subtract(costTotal);
 
         orderLine.setUnitPrice(scale(unitPrice));
@@ -1407,7 +1567,18 @@ public class PosOperationsService {
         }
     }
 
-    private Map<Long, Integer> parseClosingStockSnapshot(String rawSnapshot) {
+    private String buildCurrentStockSnapshot() {
+        Map<Long, Integer> stockByProduct = productRepository.findAll().stream()
+                .collect(Collectors.toMap(Product::getId, Product::getStock));
+
+        try {
+            return objectMapper.writeValueAsString(stockByProduct);
+        } catch (IOException ex) {
+            throw new RuntimeException("No se pudo generar el snapshot de stock al abrir turno", ex);
+        }
+    }
+
+    private Map<Long, Integer> parseStockSnapshot(String rawSnapshot) {
         if (rawSnapshot == null || rawSnapshot.isBlank()) {
             return Map.of();
         }

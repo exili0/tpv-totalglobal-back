@@ -1,15 +1,16 @@
 package com.ncortez.TPV_TotalGlobal.service;
 
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Optional;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
 import com.ncortez.TPV_TotalGlobal.entity.Category;
 import com.ncortez.TPV_TotalGlobal.entity.Product;
 import com.ncortez.TPV_TotalGlobal.repository.CategoryRepository;
 import com.ncortez.TPV_TotalGlobal.repository.ProductRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-
-import java.math.BigDecimal;
-import java.util.List;
-import java.util.Optional;
 
 /**
  * Servicio de lógica de negocio para la gestión de productos del TPV.
@@ -75,7 +76,7 @@ public class ProductService {
      * Crea un nuevo producto en el sistema.
      * @param name Nombre del producto
      * @param description Descripción
-     * @param price Precio base sin IVA
+    * @param price Precio final de venta (IVA incluido)
      * @param vatPercent Porcentaje de IVA aplicable
      * @param barcode Código de barras (opcional)
      * @param imageUrl URL de la imagen (opcional)

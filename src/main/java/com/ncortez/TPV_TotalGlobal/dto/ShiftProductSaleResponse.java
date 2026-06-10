@@ -12,6 +12,7 @@ public class ShiftProductSaleResponse {
     private Integer quantitySold;
     private BigDecimal totalSales;
     private BigDecimal totalProfit;
+    private Integer stockAtOpen;
     private Integer stockAtClose;
 
     public Long getProductId() { return productId; }
@@ -28,6 +29,9 @@ public class ShiftProductSaleResponse {
 
     public BigDecimal getTotalProfit() { return totalProfit; }
     public void setTotalProfit(BigDecimal totalProfit) { this.totalProfit = totalProfit; }
+
+    public Integer getStockAtOpen() { return stockAtOpen; }
+    public void setStockAtOpen(Integer stockAtOpen) { this.stockAtOpen = stockAtOpen; }
 
     public Integer getStockAtClose() { return stockAtClose; }
     public void setStockAtClose(Integer stockAtClose) { this.stockAtClose = stockAtClose; }

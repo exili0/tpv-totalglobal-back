@@ -2,7 +2,11 @@ package com.ncortez.TPV_TotalGlobal.controller;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import com.ncortez.TPV_TotalGlobal.dto.ApiMessageResponse;
 import com.ncortez.TPV_TotalGlobal.dto.LoginRequest;
@@ -10,6 +14,7 @@ import com.ncortez.TPV_TotalGlobal.dto.LoginResponse;
 import com.ncortez.TPV_TotalGlobal.dto.RestorePasswordRequest;
 import com.ncortez.TPV_TotalGlobal.dto.SetNewPasswordRequest;
 import com.ncortez.TPV_TotalGlobal.dto.SetupSecurityQuestionsRequest;
+import com.ncortez.TPV_TotalGlobal.security.JwtService;
 import com.ncortez.TPV_TotalGlobal.service.AuthService;
 
 /**
@@ -23,6 +28,9 @@ public class AuthController {
 
     @Autowired
     private AuthService authService;
+
+    @Autowired
+    private JwtService jwtService;
 
     /**
      * Autentica un usuario en el sistema.
@@ -39,7 +47,11 @@ public class AuthController {
     public ResponseEntity<?> login(@RequestBody LoginRequest request) {
         try {
             String role = authService.authenticate(request.getUsername(), request.getPassword());
-            return ResponseEntity.ok(new LoginResponse(role));
+            String username = request.getUsername().trim().toLowerCase();
+            // Tras validar credenciales, emitimos JWT firmado con username + role.
+            // Este token será la única fuente de identidad/autorización en requests protegidas.
+            String token = jwtService.generateToken(username, role);
+            return ResponseEntity.ok(new LoginResponse(role, token, username));
         } catch (RuntimeException ex) {
             String message = ex.getMessage();
 

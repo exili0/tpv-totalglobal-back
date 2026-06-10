@@ -1,11 +1,20 @@
 package com.ncortez.TPV_TotalGlobal.entity;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.ncortez.TPV_TotalGlobal.entity.enums.CashShiftStatus;
-import jakarta.persistence.*;
-
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.ncortez.TPV_TotalGlobal.entity.enums.CashShiftStatus;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Lob;
+import jakarta.persistence.Table;
 
 /**
  * Turno de caja para apertura, cierre y control del reporte Z.
@@ -52,6 +61,10 @@ public class CashRegisterShift {
 
     @Lob
     @Column(columnDefinition = "LONGTEXT")
+    private String openingStockSnapshot;
+
+    @Lob
+    @Column(columnDefinition = "LONGTEXT")
     private String closingStockSnapshot;
 
     public Long getId() { return id; }
@@ -89,6 +102,9 @@ public class CashRegisterShift {
 
     public String getClosedBy() { return closedBy; }
     public void setClosedBy(String closedBy) { this.closedBy = closedBy; }
+
+    public String getOpeningStockSnapshot() { return openingStockSnapshot; }
+    public void setOpeningStockSnapshot(String openingStockSnapshot) { this.openingStockSnapshot = openingStockSnapshot; }
 
     public String getClosingStockSnapshot() { return closingStockSnapshot; }
     public void setClosingStockSnapshot(String closingStockSnapshot) { this.closingStockSnapshot = closingStockSnapshot; }

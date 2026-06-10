@@ -7,13 +7,19 @@ package com.ncortez.TPV_TotalGlobal.dto;
 public class LoginResponse {
     /** Rol del usuario autenticado (ADMIN o COMMON_USER) */
     private String role;
+    /** Token JWT de sesión para autorizar llamadas posteriores. */
+    private String token;
+    /** Username autenticado, útil para trazabilidad en front. */
+    private String username;
 
     /**
      * Constructor que inicializa la respuesta con el rol del usuario.
      * @param role Rol del usuario autenticado
      */
-    public LoginResponse(String role) {
+    public LoginResponse(String role, String token, String username) {
         this.role = role;
+        this.token = token;
+        this.username = username;
     }
 
     /**
@@ -26,4 +32,10 @@ public class LoginResponse {
      * @param role Rol a asignar
      */
     public void setRole(String role) { this.role = role; }
+
+    public String getToken() { return token; }
+    public void setToken(String token) { this.token = token; }
+
+    public String getUsername() { return username; }
+    public void setUsername(String username) { this.username = username; }
 }

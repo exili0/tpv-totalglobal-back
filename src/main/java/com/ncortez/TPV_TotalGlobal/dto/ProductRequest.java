@@ -12,7 +12,7 @@ public class ProductRequest {
     private String name;
     /** Descripción detallada del producto */
     private String description;
-    /** Precio base sin IVA */
+    /** Precio final de venta (IVA incluido) */
     private BigDecimal price;
     /** Coste unitario base para cálculo de beneficio */
     private BigDecimal costPrice;
@@ -50,12 +50,12 @@ public class ProductRequest {
     public void setDescription(String description) { this.description = description; }
 
     /**
-     * Obtiene el precio base sin IVA.
+     * Obtiene el precio final de venta (IVA incluido).
      * @return Precio
      */
     public BigDecimal getPrice() { return price; }
     /**
-     * Establece el precio base sin IVA.
+     * Establece el precio final de venta (IVA incluido).
      * @param price Precio
      */
     public void setPrice(BigDecimal price) { this.price = price; }

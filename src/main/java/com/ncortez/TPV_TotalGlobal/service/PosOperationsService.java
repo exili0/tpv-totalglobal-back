@@ -63,6 +63,9 @@ import java.util.stream.Stream;
 @Service
 public class PosOperationsService {
 
+    /** Ventana máxima permitida para devolver tickets cobrados. */
+    private static final int REFUND_WINDOW_DAYS = 30;
+
     @Autowired
     private BusinessTableRepository businessTableRepository;
 
@@ -797,7 +800,12 @@ public class PosOperationsService {
         return tableNumber == 0 ? "Barra" : "Mesa " + tableNumber;
     }
 
-    @Transactional
+    /**
+     * Registra una devolución sobre un cobro ya realizado.
+     * La operación es transaccional para evitar estados intermedios incoherentes
+     * entre la devolución, el stock y el turno de caja.
+     */
+    @Transactional(rollbackFor = Exception.class)
     public Refund registerRefund(RefundRequest request) {
         if (request == null || request.getPaymentId() == null) {
             throw new RuntimeException("El identificador del cobro es obligatorio");
@@ -827,6 +835,10 @@ public class PosOperationsService {
 
         Payment payment = paymentRepository.findByIdForUpdate(request.getPaymentId())
                 .orElseThrow(() -> new RuntimeException("Cobro no encontrado: " + request.getPaymentId()));
+
+        if (payment.getPaidAt() != null && payment.getPaidAt().plusDays(REFUND_WINDOW_DAYS).isBefore(LocalDateTime.now())) {
+            throw new RuntimeException("No se permiten devoluciones de tickets con más de " + REFUND_WINDOW_DAYS + " días");
+        }
 
         BigDecimal refundedAmount = refundRepository.sumAmountByPaymentId(payment.getId());
         BigDecimal remainingAmount = payment.getAmount().subtract(refundedAmount != null ? refundedAmount : BigDecimal.ZERO);
@@ -921,6 +933,8 @@ public class PosOperationsService {
                 stockService.registerStockWaste(product, savedRefund, refundedQuantity, wasteReason);
             }
         }
+
+        applyRefundToShift(savedRefund);
 
         return savedRefund;
     }
@@ -1109,10 +1123,12 @@ public class PosOperationsService {
         LocalDateTime start = shift.getOpenedAt();
         LocalDateTime end = shift.getClosedAt() != null ? shift.getClosedAt() : LocalDateTime.now();
         List<Payment> payments = paymentRepository.findByPaidAtBetweenWithOrderLinesAndProducts(start, end);
+        List<Refund> refunds = refundRepository.findByRefundedAtBetweenWithDetails(start, end);
 
         Map<Long, Integer> openingSnapshotMap = parseStockSnapshot(shift.getOpeningStockSnapshot());
         Map<Long, Integer> closingSnapshotMap = parseStockSnapshot(shift.getClosingStockSnapshot());
         Map<Long, ProductAccumulator> productTotals = new HashMap<>();
+        Map<Long, ProductRefundAccumulator> refundedTotals = buildRefundAccumulatorByProduct(refunds);
 
         for (Payment payment : payments) {
             if (payment.getSaleOrder() == null || payment.getSaleOrder().getOrderLines() == null) {
@@ -1132,6 +1148,8 @@ public class PosOperationsService {
                     created.quantitySold = 0;
                     created.totalSales = BigDecimal.ZERO;
                     created.totalProfit = BigDecimal.ZERO;
+                    created.stockLossQuantity = 0;
+                    created.stockLossAmount = BigDecimal.ZERO;
                     return created;
                 });
 
@@ -1144,6 +1162,20 @@ public class PosOperationsService {
             }
         }
 
+        for (Map.Entry<Long, ProductRefundAccumulator> entry : refundedTotals.entrySet()) {
+            ProductAccumulator accumulator = productTotals.get(entry.getKey());
+            if (accumulator == null) {
+                continue;
+            }
+
+            ProductRefundAccumulator refunded = entry.getValue();
+            accumulator.quantitySold = Math.max(0, accumulator.quantitySold - refunded.refundedQuantity);
+            accumulator.totalSales = accumulator.totalSales.subtract(refunded.refundedSales);
+            accumulator.totalProfit = accumulator.totalProfit.subtract(refunded.refundedProfitImpact);
+            accumulator.stockLossQuantity += refunded.nonRestockedQuantity;
+            accumulator.stockLossAmount = accumulator.stockLossAmount.add(refunded.nonRestockedCost);
+        }
+
         List<ShiftProductSaleResponse> soldProducts = productTotals.values().stream()
                 .map(total -> {
                     ShiftProductSaleResponse response = new ShiftProductSaleResponse();
@@ -1152,6 +1184,8 @@ public class PosOperationsService {
                     response.setQuantitySold(total.quantitySold);
                     response.setTotalSales(scale(total.totalSales));
                     response.setTotalProfit(scale(total.totalProfit));
+                    response.setStockLossQuantity(total.stockLossQuantity);
+                    response.setStockLossAmount(scale(total.stockLossAmount));
                     response.setStockAtOpen(openingSnapshotMap.get(total.productId));
                     response.setStockAtClose(closingSnapshotMap.get(total.productId));
                     return response;
@@ -1537,9 +1571,105 @@ public class PosOperationsService {
         shift.setTotalSales(scale(shift.getTotalSales().add(amount)));
         shift.setTotalProfit(scale(shift.getTotalProfit().add(orderProfit != null ? orderProfit : BigDecimal.ZERO)));
     }
+    /**
+     * Aplica una devolución al turno de caja correspondiente.
+     * Resta el importe del reembolso del método de pago original y recalcula beneficio.
+     */
+    private void applyRefundToShift(Refund refund) {
+        if (refund == null || refund.getPayment() == null || refund.getRefundedAt() == null) {
+            return;
+        }
+
+        LocalDateTime refundedAt = refund.getRefundedAt();
+        List<CashRegisterShift> shifts = cashRegisterShiftRepository.findAllByOrderByOpenedAtDesc();
+
+        CashRegisterShift targetShift = shifts.stream()
+                .filter(shift -> {
+                    if (shift.getOpenedAt() == null) {
+                        return false;
+                    }
+
+                    boolean isAfterOpen = !refundedAt.isBefore(shift.getOpenedAt());
+                    boolean isBeforeClose = shift.getClosedAt() == null || !refundedAt.isAfter(shift.getClosedAt());
+                    return isAfterOpen && isBeforeClose;
+                })
+                .findFirst()
+                .orElse(null);
+
+        if (targetShift == null) {
+            return;
+        }
+
+        normalizeShiftTotals(targetShift);
+
+        BigDecimal amount = refund.getAmount() != null ? refund.getAmount() : BigDecimal.ZERO;
+        PaymentMethod paymentMethod = refund.getPayment().getPaymentMethod() != null
+                ? refund.getPayment().getPaymentMethod()
+                : PaymentMethod.OTHER;
+        BigDecimal refundProfitImpact = calculateRefundProfitImpact(refund);
+
+        subtractRefundFromShift(targetShift, amount, paymentMethod, refundProfitImpact);
+        cashRegisterShiftRepository.save(targetShift);
+    }
+    /**
+     * Resta el importe de una devolución del turno de caja según el método de pago original.
+     */
+    private void subtractRefundFromShift(CashRegisterShift shift, BigDecimal amount, PaymentMethod paymentMethod, BigDecimal refundProfitImpact) {
+        BigDecimal safeAmount = amount != null ? amount : BigDecimal.ZERO;
+        BigDecimal safeProfitImpact = refundProfitImpact != null ? refundProfitImpact : BigDecimal.ZERO;
+
+        switch (paymentMethod) {
+            case CASH -> shift.setCashSales(scale(shift.getCashSales().subtract(safeAmount)));
+            case CARD -> shift.setCardSales(scale(shift.getCardSales().subtract(safeAmount)));
+            default -> shift.setOtherSales(scale(shift.getOtherSales().subtract(safeAmount)));
+        }
+
+        shift.setTotalSales(scale(shift.getTotalSales().subtract(safeAmount)));
+        shift.setTotalProfit(scale(shift.getTotalProfit().subtract(safeProfitImpact)));
+    }
+    /**
+     * Calcula el impacto económico de una devolución.
+     * Si el producto vuelve a stock, solo revierte el beneficio asociado.
+     * Si no vuelve, descuenta el valor neto consumido por la devolución.
+     */
+    private BigDecimal calculateRefundProfitImpact(Refund refund) {
+        if (refund == null) {
+            return BigDecimal.ZERO;
+        }
+
+        SaleOrderLine line = refund.getSaleOrderLine();
+        Integer refundedQuantity = refund.getRefundedQuantity();
+
+        if (line != null && refundedQuantity != null && line.getQuantity() != null && line.getQuantity() > 0) {
+            BigDecimal refundedUnits = BigDecimal.valueOf(Math.max(refundedQuantity, 0));
+            BigDecimal totalUnits = BigDecimal.valueOf(line.getQuantity());
+
+            BigDecimal refundedSubtotal = safeValue(line.getSubtotal())
+                    .multiply(refundedUnits)
+                    .divide(totalUnits, 2, RoundingMode.HALF_UP);
+
+            BigDecimal refundedProfit = safeValue(line.getProfit())
+                    .multiply(refundedUnits)
+                    .divide(totalUnits, 2, RoundingMode.HALF_UP);
+
+            // Si no vuelve a stock, la pérdida real es mayor: se pierde el ingreso neto,
+            // pero el coste del proveedor permanece consumido.
+            return refund.isReturnToStock() ? refundedProfit : refundedSubtotal;
+        }
+
+        SaleOrder order = refund.getSaleOrder();
+        if (order != null && safeValue(order.getTotal()).compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal netRatio = safeValue(order.getSubtotal())
+                    .divide(safeValue(order.getTotal()), 6, RoundingMode.HALF_UP);
+            return safeValue(refund.getAmount()).multiply(netRatio).setScale(2, RoundingMode.HALF_UP);
+        }
+
+        return safeValue(refund.getAmount());
+    }
 
     /**
      * Construye un snapshot JSON {productId: stockAlCerrar} solo para productos vendidos en el turno.
+     * Sirve como base del cierre Z y de la auditoría de inventario.
      */
     private String buildClosingStockSnapshot(LocalDateTime start, LocalDateTime end) {
         List<Payment> payments = paymentRepository.findByPaidAtBetweenWithOrderLinesAndProducts(start, end);
@@ -1567,6 +1697,9 @@ public class PosOperationsService {
         }
     }
 
+    /**
+     * Construye el snapshot de stock actual al abrir turno.
+     */
     private String buildCurrentStockSnapshot() {
         Map<Long, Integer> stockByProduct = productRepository.findAll().stream()
                 .collect(Collectors.toMap(Product::getId, Product::getStock));
@@ -1578,6 +1711,9 @@ public class PosOperationsService {
         }
     }
 
+    /**
+     * Convierte el snapshot de stock persistido desde JSON a un mapa en memoria.
+     */
     private Map<Long, Integer> parseStockSnapshot(String rawSnapshot) {
         if (rawSnapshot == null || rawSnapshot.isBlank()) {
             return Map.of();
@@ -1590,15 +1726,81 @@ public class PosOperationsService {
         }
     }
 
+    /**
+     * Agrega las devoluciones por producto para calcular impacto en caja y stock.
+     */
+    private Map<Long, ProductRefundAccumulator> buildRefundAccumulatorByProduct(List<Refund> refunds) {
+        Map<Long, ProductRefundAccumulator> totals = new HashMap<>();
+        if (refunds == null || refunds.isEmpty()) {
+            return totals;
+        }
+
+        for (Refund refund : refunds) {
+            SaleOrderLine line = refund.getSaleOrderLine();
+            Integer refundedQuantity = refund.getRefundedQuantity();
+
+            if (line == null || line.getProduct() == null || line.getProduct().getId() == null || refundedQuantity == null) {
+                continue;
+            }
+
+            Integer totalLineQuantity = line.getQuantity();
+            if (totalLineQuantity == null || totalLineQuantity <= 0 || refundedQuantity <= 0) {
+                continue;
+            }
+
+            ProductRefundAccumulator accumulator = totals.computeIfAbsent(line.getProduct().getId(), id -> new ProductRefundAccumulator());
+
+            BigDecimal refundedUnits = BigDecimal.valueOf(refundedQuantity);
+            BigDecimal totalUnits = BigDecimal.valueOf(totalLineQuantity);
+            BigDecimal refundedSubtotal = safeValue(line.getSubtotal())
+                    .multiply(refundedUnits)
+                    .divide(totalUnits, 2, RoundingMode.HALF_UP);
+            BigDecimal refundedProfit = safeValue(line.getProfit())
+                    .multiply(refundedUnits)
+                    .divide(totalUnits, 2, RoundingMode.HALF_UP);
+                BigDecimal refundedCost = safeValue(line.getCostTotal())
+                    .multiply(refundedUnits)
+                    .divide(totalUnits, 2, RoundingMode.HALF_UP);
+
+            accumulator.refundedQuantity += refundedQuantity;
+            accumulator.refundedSales = accumulator.refundedSales.add(safeValue(refund.getAmount()));
+            accumulator.refundedProfitImpact = accumulator.refundedProfitImpact.add(
+                    refund.isReturnToStock() ? refundedProfit : refundedSubtotal
+            );
+            if (!refund.isReturnToStock()) {
+                accumulator.nonRestockedQuantity += refundedQuantity;
+                accumulator.nonRestockedCost = accumulator.nonRestockedCost.add(refundedCost);
+            }
+        }
+
+        return totals;
+    }
+
+    private BigDecimal safeValue(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
+    }
+
     private static class ProductAccumulator {
         private Long productId;
         private String productName;
         private Integer quantitySold;
         private BigDecimal totalSales;
         private BigDecimal totalProfit;
+        private Integer stockLossQuantity;
+        private BigDecimal stockLossAmount;
     }
 
-    /** Suma los importes de los cobros de una lista filtrados por método de pago. */
+    private static class ProductRefundAccumulator {
+        private Integer refundedQuantity = 0;
+        private BigDecimal refundedSales = BigDecimal.ZERO;
+        private BigDecimal refundedProfitImpact = BigDecimal.ZERO;
+        private Integer nonRestockedQuantity = 0;
+        private BigDecimal nonRestockedCost = BigDecimal.ZERO;
+    }
+
+    /**
+     * Suma los importes de los cobros de una lista filtrados por método de pago.
+     */
     private BigDecimal sumByMethod(List<Payment> payments, PaymentMethod paymentMethod) {
         return payments.stream()
                 .filter(payment -> payment.getPaymentMethod() == paymentMethod)
@@ -1606,15 +1808,18 @@ public class PosOperationsService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    /** Redondea un BigDecimal a 2 decimales con HALF_UP. 
-     * Esto es  para que los importes se muestren siempre con 2 decimales en la interfaz, 
-     * evitando problemas de formato o redondeo en la presentación.
+    /**
+     * Redondea un BigDecimal a 2 decimales con HALF_UP.
+     * Se usa para mantener consistencia visual y contable en importes.
      */
     private BigDecimal scale(BigDecimal value) {
         return value.setScale(2, RoundingMode.HALF_UP);
     }
 
-    /** Normaliza el nombre de usuario: elimina espacios y convierte a minúsculas. Devuelve null si está vacío. */
+    /**
+     * Normaliza el nombre de usuario: elimina espacios y convierte a minúsculas.
+     * Devuelve null si el valor queda vacío.
+     */
     private String normalizeUsername(String username) {
         if (username == null || username.isBlank()) {
             return null;
@@ -1622,7 +1827,10 @@ public class PosOperationsService {
         return username.trim().toLowerCase();
     }
 
-    /** Normaliza el token de sesión: elimina espacios. Devuelve null si está vacío. */
+    /**
+     * Normaliza el token de sesión: elimina espacios.
+     * Devuelve null si el valor queda vacío.
+     */
     private String normalizeToken(String token) {
         if (token == null || token.isBlank()) {
             return null;

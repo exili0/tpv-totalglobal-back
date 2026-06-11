@@ -12,6 +12,8 @@ public class ShiftProductSaleResponse {
     private Integer quantitySold;
     private BigDecimal totalSales;
     private BigDecimal totalProfit;
+    private Integer stockLossQuantity;
+    private BigDecimal stockLossAmount;
     private Integer stockAtOpen;
     private Integer stockAtClose;
 
@@ -29,6 +31,12 @@ public class ShiftProductSaleResponse {
 
     public BigDecimal getTotalProfit() { return totalProfit; }
     public void setTotalProfit(BigDecimal totalProfit) { this.totalProfit = totalProfit; }
+
+    public Integer getStockLossQuantity() { return stockLossQuantity; }
+    public void setStockLossQuantity(Integer stockLossQuantity) { this.stockLossQuantity = stockLossQuantity; }
+
+    public BigDecimal getStockLossAmount() { return stockLossAmount; }
+    public void setStockLossAmount(BigDecimal stockLossAmount) { this.stockLossAmount = stockLossAmount; }
 
     public Integer getStockAtOpen() { return stockAtOpen; }
     public void setStockAtOpen(Integer stockAtOpen) { this.stockAtOpen = stockAtOpen; }

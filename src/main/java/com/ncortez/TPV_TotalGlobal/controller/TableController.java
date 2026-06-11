@@ -124,6 +124,9 @@ public class TableController {
         }
     }
 
+    /**
+     * Extrae el rol efectivo desde la autenticación para aplicar reglas de acceso.
+     */
     private String extractRole(Authentication authentication) {
         if (authentication == null || authentication.getAuthorities() == null) {
             return null;

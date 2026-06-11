@@ -1,5 +1,16 @@
 package com.ncortez.TPV_TotalGlobal.service;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 import com.ncortez.TPV_TotalGlobal.entity.Product;
 import com.ncortez.TPV_TotalGlobal.entity.Refund;
 import com.ncortez.TPV_TotalGlobal.entity.StockMovement;
@@ -8,16 +19,6 @@ import com.ncortez.TPV_TotalGlobal.entity.enums.StockMovementType;
 import com.ncortez.TPV_TotalGlobal.repository.ProductRepository;
 import com.ncortez.TPV_TotalGlobal.repository.StockMovementRepository;
 import com.ncortez.TPV_TotalGlobal.repository.StockWasteRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * Servicio de gestión de stock automatizado.
@@ -35,6 +36,15 @@ public class StockService {
     @Autowired
     private StockWasteRepository stockWasteRepository;
 
+    private Product lockProduct(Product product) {
+        if (product == null || product.getId() == null) {
+            throw new RuntimeException("Producto inválido para control de stock");
+        }
+
+        return productRepository.findByIdForUpdate(product.getId())
+                .orElseThrow(() -> new RuntimeException("Producto no encontrado: " + product.getId()));
+    }
+
     /**
      * Descuenta stock cuando se agrega un producto al pedido.
      * Verifica que haya stock disponible antes de descontar.
@@ -47,24 +57,30 @@ public class StockService {
      */
     @Transactional
     public void deductStockForSale(Product product, Integer quantity, Long saleOrderId) {
-        if (product.getStock() == null) {
+        if (quantity == null || quantity <= 0) {
+            throw new RuntimeException("La cantidad a descontar debe ser mayor que cero");
+        }
+
+        Product lockedProduct = lockProduct(product);
+
+        if (lockedProduct.getStock() == null) {
             // Si el producto no tiene control de stock, no hacer nada
             return;
         }
 
-        if (product.getStock() < quantity) {
+        if (lockedProduct.getStock() < quantity) {
             throw new RuntimeException(
                 String.format("Stock insuficiente para %s. Disponible: %d, Solicitado: %d",
-                    product.getName(), product.getStock(), quantity)
+                    lockedProduct.getName(), lockedProduct.getStock(), quantity)
             );
         }
 
         // Descontar stock
-        product.setStock(product.getStock() - quantity);
-        productRepository.save(product);
+        lockedProduct.setStock(lockedProduct.getStock() - quantity);
+        productRepository.saveAndFlush(lockedProduct);
 
         // Registrar movimiento de auditoría
-        StockMovement movement = new StockMovement(product, StockMovementType.SALE, quantity, saleOrderId);
+        StockMovement movement = new StockMovement(lockedProduct, StockMovementType.SALE, quantity, saleOrderId);
         stockMovementRepository.save(movement);
     }
 
@@ -78,17 +94,23 @@ public class StockService {
      */
     @Transactional
     public void returnStockFromRefund(Product product, Integer quantity, Long refundId) {
-        if (product.getStock() == null) {
+        if (quantity == null || quantity <= 0) {
+            throw new RuntimeException("La cantidad a devolver debe ser mayor que cero");
+        }
+
+        Product lockedProduct = lockProduct(product);
+
+        if (lockedProduct.getStock() == null) {
             // Si el producto no tiene control de stock, no hacer nada
             return;
         }
 
         // Incrementar stock
-        product.setStock(product.getStock() + quantity);
-        productRepository.save(product);
+        lockedProduct.setStock(lockedProduct.getStock() + quantity);
+        productRepository.saveAndFlush(lockedProduct);
 
         // Registrar movimiento de auditoría
-        StockMovement movement = new StockMovement(product, StockMovementType.RETURN, quantity, refundId);
+        StockMovement movement = new StockMovement(lockedProduct, StockMovementType.RETURN, quantity, refundId);
         stockMovementRepository.save(movement);
     }
 
@@ -102,15 +124,17 @@ public class StockService {
             return;
         }
 
-        if (product.getStock() == null) {
+        Product lockedProduct = lockProduct(product);
+
+        if (lockedProduct.getStock() == null) {
             // Si el producto no tiene control de stock, no hacer nada
             return;
         }
 
-        product.setStock(product.getStock() + quantity);
-        productRepository.save(product);
+        lockedProduct.setStock(lockedProduct.getStock() + quantity);
+        productRepository.saveAndFlush(lockedProduct);
 
-        StockMovement movement = new StockMovement(product, StockMovementType.RETURN, quantity, saleOrderId);
+        StockMovement movement = new StockMovement(lockedProduct, StockMovementType.RETURN, quantity, saleOrderId);
         stockMovementRepository.save(movement);
     }
 

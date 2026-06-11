@@ -1,13 +1,15 @@
 package com.ncortez.TPV_TotalGlobal.repository;
 
-import com.ncortez.TPV_TotalGlobal.entity.Refund;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-import java.math.BigDecimal;
-import java.util.List;
-import java.util.Optional;
+import com.ncortez.TPV_TotalGlobal.entity.Refund;
 
 /**
  * Repositorio para la persistencia de devoluciones.
@@ -39,4 +41,14 @@ public interface RefundRepository extends JpaRepository<Refund, Long> {
                         group by r.saleOrderLine.id
                         """)
         List<Object[]> sumRefundedQuantityGroupedByLine(@Param("paymentId") Long paymentId);
+
+        @Query("""
+                        select distinct r
+                        from Refund r
+                        left join fetch r.payment p
+                        left join fetch r.saleOrderLine l
+                        left join fetch l.product
+                        where r.refundedAt between :start and :end
+                        """)
+        List<Refund> findByRefundedAtBetweenWithDetails(@Param("start") LocalDateTime start, @Param("end") LocalDateTime end);
 }

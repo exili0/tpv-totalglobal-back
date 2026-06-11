@@ -1,9 +1,16 @@
 package com.ncortez.TPV_TotalGlobal.repository;
 
-import com.ncortez.TPV_TotalGlobal.entity.Product;
-import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.List;
 import java.util.Optional;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import com.ncortez.TPV_TotalGlobal.entity.Product;
+
+import jakarta.persistence.LockModeType;
 
 /**
  * Repositorio de acceso a datos para la entidad Product.
@@ -33,6 +40,14 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
      * @return Lista de productos activos de esa categoría
      */
     List<Product> findByCategoryIdAndActiveTrue(Long categoryId);
+
+    /**
+     * Bloquea el producto en base de datos mientras se ajusta su stock.
+     * Evita que dos operaciones simultaneas descuenten la misma cantidad.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Product p where p.id = :productId")
+    Optional<Product> findByIdForUpdate(@Param("productId") Long productId);
 
     /**
      * Comprueba si existe algún producto asociado a una categoría.

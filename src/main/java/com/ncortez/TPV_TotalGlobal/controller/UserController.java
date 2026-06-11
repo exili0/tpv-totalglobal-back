@@ -1,16 +1,26 @@
 package com.ncortez.TPV_TotalGlobal.controller;
 
-import com.ncortez.TPV_TotalGlobal.entity.UserEntity;
-import com.ncortez.TPV_TotalGlobal.service.UserService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.Date;
 import java.util.List;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.ncortez.TPV_TotalGlobal.entity.UserEntity;
+import com.ncortez.TPV_TotalGlobal.service.UserService;
 
 /**
  * Controlador REST para la gestión de usuarios del sistema.
@@ -124,6 +134,10 @@ public class UserController {
         }
     }
 
+    /**
+     * Convierte una fecha en formato ISO YYYY-MM-DD a java.util.Date.
+     * Devuelve null si la entrada viene vacía.
+     */
     private Date parseDateOrNull(String rawDate) {
         if (rawDate == null || rawDate.trim().isEmpty()) {
             return null;
